@@ -103,6 +103,20 @@ Security notes: tables have row-level security with no public policies, so the b
 `/api/crm`, which checks the staff token's signature (Supabase public keys), expiry and the allow-list on every call.
 The session lives in the browser tab only. Rotate the secret key if it is ever pasted somewhere it should not be.
 
+### Testing the CRM on your own computer
+
+`npm run dev` also serves `/api/*` (see `vite.config.js`), so the whole CRM works locally against your real Supabase project.
+
+1. In `.env.local` (never committed) set `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_PUBLISHABLE_KEY` and
+   `CRM_ALLOWED_EMAILS=you@example.com`.
+2. `node scripts/crm-add-staff.mjs you@example.com` and note the password it prints once.
+3. `npm run dev`, open `http://localhost:5173/crm` and sign in.
+4. Put something in it: send an enquiry from the Contact page, or make a staging booking at `/book-flights`
+   (`TBO_ENV=staging`, `ALLOW_FAKE_PAYMENTS=true` and an empty `RAZORPAY_KEY_ID` book without a card).
+5. Check: the Dashboard numbers, open a booking (timeline, travellers, TBO calls), change a status and add a note,
+   search and filter, export a CSV, then Settings: wallet balance. Staging data is labelled "Test mode".
+6. Negative checks: open `/crm` signed out (login only), sign in with an account that is not on `CRM_ALLOWED_EMAILS` (refused).
+
 ### Running it on the free tiers (Vercel Hobby + Supabase Free)
 
 - **One database trip per action.** Dashboard, booking panel, saves, enquiries and the booking path each call a single

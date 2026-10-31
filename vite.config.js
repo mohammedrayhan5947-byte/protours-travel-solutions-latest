@@ -51,6 +51,8 @@ function razorpayDevApi() {
       mount(server, '/api/verify-payment', '/api/verify-payment.js')
       mount(server, '/api/flights', '/api/flights.js')
       mount(server, '/api/crm', '/api/crm.js')
+      mount(server, '/api/account', '/api/account.js')
+      mount(server, '/api/enquiry', '/api/enquiry.js')
     },
   }
 }
