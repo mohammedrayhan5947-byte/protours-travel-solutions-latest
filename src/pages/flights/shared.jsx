@@ -82,3 +82,28 @@ export function Stepper({ current }) {
     </ol>
   )
 }
+
+/* ISO-8601 duration ("P1DT2H", "PT3H") to hours; null when unreadable. */
+function hoursOf(d) {
+  const m = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?)?$/.exec(String(d || ''))
+  return m ? (Number(m[1] || 0) * 24 + Number(m[2] || 0) + Number(m[3] || 0) / 60) : null
+}
+const hoursLabel = (h) => (h >= 48 ? `${Math.round(h / 24)} days` : h >= 1 ? `${Math.round(h)} h` : `${Math.round(h * 60)} min`)
+
+/* Cancellation / date-change fee by how long before departure, drawn as a bar like the big sites do.
+   Uses the airline's own mini fare rules; shows nothing when they are missing or unreadable. */
+export function PenaltyBar({ rules, type, title }) {
+  const segs = (rules || []).filter((m) => m.Type === type).map((m) => ({ from: hoursOf(m.FromDuration) ?? 0, to: m.ToDuration ? hoursOf(m.ToDuration) : null, fee: (m.PaxPenalties || [])[0]?.AirlineFee }))
+    .filter((x) => x.fee != null).sort((a, b) => b.from - a.from)
+  if (!segs.length) return null
+  const colour = (fee) => (fee === 0 ? 'bg-palm' : 'bg-gold-500')
+  return (
+    <div className="mt-3">
+      <p className="mb-1 text-[0.85rem] font-bold text-ink">{title}</p>
+      <div className="flex h-2.5 overflow-hidden rounded-full" aria-hidden>{segs.map((x, i) => <span key={i} className={`flex-1 ${i === segs.length - 1 && x.fee > 0 ? 'bg-red-500' : colour(x.fee)}`} />)}</div>
+      <ul className="mt-2 grid gap-1 text-[0.8rem] text-slate-700">
+        {segs.map((x, i) => <li key={i} className="flex justify-between gap-3 rounded-lg bg-sand/60 px-3 py-1.5"><span>{x.to == null ? `More than ${hoursLabel(x.from)} before` : x.from ? `${hoursLabel(x.from)} to ${hoursLabel(x.to)} before` : `Up to ${hoursLabel(x.to)} before`} departure</span><span className="font-bold">{x.fee === 0 ? 'Free' : `${inr(x.fee)} + our fee`}</span></li>)}
+      </ul>
+    </div>
+  )
+}

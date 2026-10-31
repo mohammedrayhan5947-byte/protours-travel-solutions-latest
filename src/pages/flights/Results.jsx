@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ArrowRight, BadgeCheck, Check, ChevronDown, ChevronUp, Filter, Loader2, Luggage, Pencil, Plane, RotateCcw, Users, X } from 'lucide-react'
 
 import SearchWidget, { useMonthFares } from './Search.jsx'
-import { AirlineMark, TIME_BUCKETS, addDays, bucketOf, cityOf, dateLabel, dayMonth, dur, inr, minutesBetween, time, todayIso, weekday } from './shared.jsx'
+import { addDays, AirlineMark, api, bucketOf, cityOf, dateLabel, dayMonth, dur, inr, minutesBetween, PenaltyBar, time, TIME_BUCKETS, todayIso, weekday } from './shared.jsx'
 
 /* Results: modify-search bar, ±3-day fare strip, filters, sort tabs, expandable flight cards
    and a sticky "book" bar for round trips. All filtering/sorting happens in the browser on the
@@ -144,14 +144,38 @@ function Details({ r }) {
   )
 }
 
-function FareOptions({ fares, pax, picked, single, busy, onBook, onSelect }) {
-  const names = new Set(fares.map((f) => f.fareType)).size === fares.length
+function Fees({ session, fare }) {
+  const [state, setState] = useState('idle') // idle | loading | done | none
+  const [rules, setRules] = useState([])
+  const load = () => {
+    setState('loading')
+    api('fareRules', { session, resultIndex: fare.resultIndex })
+      .then((r) => { const ok = (r.rules || []).filter((x) => x.mini?.Rules?.length); setRules(ok); setState(ok.length ? 'done' : 'none') })
+      .catch(() => setState('none'))
+  }
+  if (state === 'idle') return <button type="button" className="mt-2 w-full text-left text-[0.8rem] font-bold text-brand-500" onClick={load}>See cancellation &amp; date-change fees</button>
+  if (state === 'loading') return <p className="mt-2 flex items-center gap-2 text-[0.8rem] text-slate-500"><Loader2 size={13} className="animate-spin" /> Getting the airline's fees…</p>
+  if (state === 'none') return <p className="mt-2 text-[0.8rem] text-slate-500">The airline hasn't published fees for this fare yet. You'll see its full rules before you pay.</p>
+  return <div className="mt-2 w-full border-t border-slate-100 pt-1">{rules.map((r, i) => <div key={i}><PenaltyBar rules={r.mini.Rules} type={1} title="Cancellation fee" /><PenaltyBar rules={r.mini.Rules} type={2} title="Date change fee" /></div>)}</div>
+}
+
+function FareOptions({ fares, pax, picked, single, busy, onBook, onSelect, session }) {
+  // TBO calls most fares "RegularFare", so name each one by what actually sets it apart from the cheapest.
+  const base = fares[0]
+  const nameOf = (f, i) => {
+    if (i === 0) return fares.length > 1 ? 'Lowest fare' : 'Fare'
+    const parts = []
+    if (f.refundable && !base.refundable) parts.push('Refundable')
+    if (f.baggage && f.baggage !== base.baggage) parts.push(`${f.baggage} baggage`)
+    if (f.fareType && f.fareType !== base.fareType) parts.push(f.fareType.replace(/([a-z])([A-Z])/g, '$1 $2'))
+    return parts.length ? parts.join(' + ') : `Fare option ${i + 1}`
+  }
   return (
     <div className="mt-3 grid gap-2 rounded-xl bg-sand/70 p-3" role="group" aria-label="Fare options">
       {fares.map((f, i) => (
-        <div key={f.resultIndex} className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-white p-3 ${picked?.resultIndex === f.resultIndex ? 'border-brand-500' : 'border-slate-200'}`}>
+        <div key={f.resultIndex} className={`flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-lg border bg-white p-3 ${picked?.resultIndex === f.resultIndex ? 'border-brand-500' : 'border-slate-200'}`}>
           <div className="min-w-0 text-[0.85rem]">
-            <p className="font-bold text-ink">{names && f.fareType ? f.fareType : `Fare option ${i + 1}`}{i === 0 && fares.length > 1 && <span className="ml-2 rounded-full bg-palm/10 px-2 py-0.5 text-[0.7rem] text-palm">Lowest</span>}</p>
+            <p className="font-bold text-ink">{nameOf(f, i)}</p>
             <p className="flex flex-wrap gap-x-3 text-slate-600">
               <span className={f.refundable ? 'font-semibold text-palm' : ''}>{f.refundable ? 'Refundable' : 'Non-refundable'}</span>
               <span><Luggage size={12} className="mr-1 inline" />{f.baggage ? `${f.baggage} check-in` : 'Check-in baggage not included'}</span>
@@ -165,13 +189,14 @@ function FareOptions({ fares, pax, picked, single, busy, onBook, onSelect }) {
               ? <button type="button" className="btn btn-gold px-4 py-2" disabled={busy || f.price == null} onClick={() => onBook([f])}>Book</button>
               : <button type="button" className={`btn px-4 py-2 ${picked?.resultIndex === f.resultIndex ? 'btn-brand' : 'btn-ghost'}`} aria-pressed={picked?.resultIndex === f.resultIndex} onClick={() => onSelect(f)}>{picked?.resultIndex === f.resultIndex ? 'Selected' : 'Select'}</button>}
           </div>
+          <Fees session={session} fare={f} />
         </div>
       ))}
     </div>
   )
 }
 
-function FlightCard({ r, fares, picked, selected, onSelect, single, badges, pax, onBook, busy, twoCol }) {
+function FlightCard({ session, r, fares, picked, selected, onSelect, single, badges, pax, onBook, busy, twoCol }) {
   const [open, setOpen] = useState(false)
   const [showFares, setShowFares] = useState(false)
   const priceText = r.price == null ? 'View fare' : inr(r.price)
@@ -213,7 +238,7 @@ function FlightCard({ r, fares, picked, selected, onSelect, single, badges, pax,
           <button type="button" className="inline-flex items-center gap-1 font-bold text-brand-500" aria-expanded={open} onClick={() => setOpen((o) => !o)}>Flight details {open ? <ChevronUp size={15} /> : <ChevronDown size={15} />}</button>
         </span>
       </div>
-      {showFares && <FareOptions fares={fares} pax={pax} picked={picked} single={single} busy={busy} onBook={onBook} onSelect={onSelect} />}
+      {showFares && <FareOptions session={session} fares={fares} pax={pax} picked={picked} single={single} busy={busy} onBook={onBook} onSelect={onSelect} />}
       {open && <Details r={r} />}
     </li>
   )
@@ -320,7 +345,7 @@ export default function Results({ found, form, picked, setPicked, busy, searchin
                       const chosen = fares.find((f) => picked[li]?.resultIndex === f.resultIndex)
                       const r = chosen || fares[0]
                       return (
-                        <FlightCard key={fares[0].resultIndex} r={r} fares={fares} picked={chosen} pax={pax} single={single} busy={busy} twoCol={lists.length === 2}
+                        <FlightCard key={fares[0].resultIndex} session={found.session} r={r} fares={fares} picked={chosen} pax={pax} single={single} busy={busy} twoCol={lists.length === 2}
                           selected={!!chosen} onBook={onBook}
                           onSelect={(f) => setPicked((p) => p.map((x, j) => (j === li ? (f && f.resultIndex ? f : r) : x)))}
                           badges={[...(fares.some((f) => f.resultIndex === cheapestIds[li]) ? ['Cheapest'] : []), ...(fares.some((f) => f.resultIndex === fastestIds[li]) ? ['Fastest'] : [])]} />
@@ -340,7 +365,7 @@ export default function Results({ found, form, picked, setPicked, busy, searchin
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex min-w-0 flex-wrap gap-x-6 gap-y-1 text-[0.85rem]">
               {picked.map((p, i) => (
-                <p key={i} className="min-w-0 truncate">{p ? <><BadgeCheck size={14} className="mr-1 inline text-gold-400" />{p.journeys[0].from}→{p.journeys.at(-1).to} {time(p.journeys[0].dep)} · {p.airline} · <strong>{inr(p.price)}</strong></> : <span className="text-white/65">Pick {heading(i) ? heading(i).toLowerCase() : `flight ${i + 1}`}</span>}</p>
+                <p key={i} className="min-w-0 truncate">{p ? <><BadgeCheck size={14} className="mr-1 inline text-gold-400" />{p.journeys[0].from}→{p.journeys.at(-1).to} {time(p.journeys[0].dep)} · {p.airline} · <strong>{inr(p.price)}</strong></> : <span className="text-white/65">Pick {heading(i) || `flight ${i + 1}`}</span>}</p>
               ))}
             </div>
             <div className="flex items-center gap-4">

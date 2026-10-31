@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, Clock, Loader2, Luggage, Lock, ShieldCheck, Utensils } from 'lucide-react'
 
-import { AirlineMark, cityOf, dateLabel, dur, inr, longDate, minutesBetween, time, todayIso, ui } from './shared.jsx'
+import { AirlineMark, PenaltyBar, cityOf, dateLabel, dur, inr, longDate, minutesBetween, time, todayIso, ui } from './shared.jsx'
 
 /* Review + travellers: itinerary and fare rules, traveller forms, meal/baggage cards, contact,
    and a sticky fare summary with a countdown (TBO holds a search for 15 minutes).
@@ -48,31 +48,6 @@ function StepBar({ addOns }) {
     <ol aria-label="Booking steps" className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.8rem] font-semibold text-slate-500">
       {steps.map((x, i) => <li key={x} className="flex items-center gap-2"><span className="grid h-5 w-5 place-items-center rounded-full bg-navy-950 text-[0.7rem] text-white">{i + 1}</span>{x}{i < steps.length - 1 && <span aria-hidden className="text-slate-300">/</span>}</li>)}
     </ol>
-  )
-}
-
-/* ISO-8601 duration ("P1DT2H", "PT3H") to hours; null when unreadable. */
-function hoursOf(d) {
-  const m = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?)?$/.exec(String(d || ''))
-  return m ? (Number(m[1] || 0) * 24 + Number(m[2] || 0) + Number(m[3] || 0) / 60) : null
-}
-const hoursLabel = (h) => (h >= 48 ? `${Math.round(h / 24)} days` : h >= 1 ? `${Math.round(h)} h` : `${Math.round(h * 60)} min`)
-
-/* Cancellation / date-change fee by how long before departure, drawn as a bar like the big sites do.
-   Uses the airline's own mini fare rules; shows nothing when they are missing or unreadable. */
-function PenaltyBar({ rules, type, title }) {
-  const segs = (rules || []).filter((m) => m.Type === type).map((m) => ({ from: hoursOf(m.FromDuration) ?? 0, to: m.ToDuration ? hoursOf(m.ToDuration) : null, fee: (m.PaxPenalties || [])[0]?.AirlineFee }))
-    .filter((x) => x.fee != null).sort((a, b) => b.from - a.from)
-  if (!segs.length) return null
-  const colour = (fee) => (fee === 0 ? 'bg-palm' : 'bg-gold-500')
-  return (
-    <div className="mt-3">
-      <p className="mb-1 text-[0.85rem] font-bold text-ink">{title}</p>
-      <div className="flex h-2.5 overflow-hidden rounded-full" aria-hidden>{segs.map((x, i) => <span key={i} className={`flex-1 ${i === segs.length - 1 && x.fee > 0 ? 'bg-red-500' : colour(x.fee)}`} />)}</div>
-      <ul className="mt-2 grid gap-1 text-[0.8rem] text-slate-700 sm:grid-cols-2">
-        {segs.map((x, i) => <li key={i} className="flex justify-between gap-3 rounded-lg bg-sand/60 px-3 py-1.5"><span>{x.to == null ? `More than ${hoursLabel(x.from)} before` : x.from ? `${hoursLabel(x.from)} to ${hoursLabel(x.to)} before` : `Up to ${hoursLabel(x.to)} before`} departure</span><span className="font-bold">{x.fee === 0 ? 'Free' : `${inr(x.fee)} + our fee`}</span></li>)}
-      </ul>
-    </div>
   )
 }
 

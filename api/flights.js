@@ -1,4 +1,4 @@
-import { search, quote, checkout, ticket, calendar } from './_lib/flights.js'
+import { search, quote, checkout, ticket, calendar, fareRules } from './_lib/flights.js'
 import { TboError, IS_LIVE, flushLogs } from './_lib/tbo.js'
 
 /**
@@ -7,7 +7,7 @@ import { TboError, IS_LIVE, flushLogs } from './_lib/tbo.js'
  * TBO credentials and the TokenId stay on the server; the browser only ever
  * holds sealed (encrypted, 15-minute) session tokens.
  */
-const ACTIONS = { search, quote, checkout, ticket, calendar }
+const ACTIONS = { search, quote, checkout, ticket, calendar, fareRules }
 
 export const config = { maxDuration: 300 } // Book/Ticket can take up to 300 s (TBO guide)
 
