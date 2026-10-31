@@ -28,8 +28,8 @@ async function jwks(force = false) {
 
 const allowed = () => String(process.env.CRM_ALLOWED_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean)
 
-/** Returns { email, sub } for a valid staff token, or throws AuthError. */
-export async function requireStaff(req) {
+/** Verifies a Supabase access token (signature, expiry, issuer, audience) and returns its claims, or throws AuthError. */
+export async function verifyToken(req) {
   const header = String(req.headers?.authorization || '')
   const token = header.startsWith('Bearer ') ? header.slice(7) : ''
   const parts = token.split('.')
@@ -49,11 +49,35 @@ export async function requireStaff(req) {
   if (!ok) throw new AuthError('Please sign in again.')
   if (!(claims.exp > Date.now() / 1000)) throw new AuthError('Your session expired. Please sign in again.')
   if (claims.iss !== `${process.env.SUPABASE_URL}/auth/v1` || claims.aud !== 'authenticated') throw new AuthError('Please sign in again.')
+  return claims
+}
 
+/**
+ * Has this user really confirmed their e-mail? Asked of Supabase with the server key, never read from the token:
+ * user_metadata inside a token is something the user can write to themselves. Cached for 5 minutes per instance.
+ */
+const confirmed = new Map()
+export async function emailConfirmed(sub) {
+  const hit = confirmed.get(sub)
+  if (hit && Date.now() - hit.at < 5 * 60_000) return hit.ok
+  const r = await fetch(`${process.env.SUPABASE_URL}/auth/v1/admin/users/${encodeURIComponent(sub)}`, { headers: { apikey: process.env.SUPABASE_SERVICE_KEY }, signal: AbortSignal.timeout(8000) })
+  if (!r.ok) throw new AuthError('Could not check your account. Please try again.', 502)
+  const u = await r.json().catch(() => ({}))
+  const ok = Boolean(u.email_confirmed_at)
+  if (confirmed.size > 500) confirmed.clear()
+  confirmed.set(sub, { ok, at: Date.now() })
+  return ok
+}
+
+/** Returns { email, sub } for a valid staff token, or throws AuthError. */
+export async function requireStaff(req) {
+  const claims = await verifyToken(req)
   const list = allowed()
   if (!list.length) throw new AuthError('No staff accounts are allowed yet. Set CRM_ALLOWED_EMAILS on the server.', 403)
   const email = String(claims.email || '').toLowerCase()
   if (!email || !list.includes(email)) throw new AuthError('This account does not have access to the CRM.', 403)
+  // Customers can now sign up on the same project: an allow-listed address must also be a CONFIRMED account.
+  if (!(await emailConfirmed(claims.sub))) throw new AuthError('This account does not have access to the CRM.', 403)
   return { email, sub: claims.sub }
 }
 

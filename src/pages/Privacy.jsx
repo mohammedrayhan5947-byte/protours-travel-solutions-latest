@@ -26,7 +26,7 @@ export default function Privacy() {
       <LegalSection title="2. The short version">
         <LegalList
           items={[
-            'This website has no account sign-up. When you press “send” on our enquiry form, WhatsApp opens with your message pre-filled, and we also save a copy (your name, phone number and what you asked for) in our booking system so our desk can follow up. The form tells you this before you send. Nothing else you type on the site is saved.',
+            'You can book without an account. If you choose to create one, we keep your name, e-mail, optional mobile number and a password (stored only as a one-way hash by our login provider) so you can sign in, see your bookings and download your e-tickets. You can ask us to delete your account at any time. When you press “send” on our enquiry form, WhatsApp opens with your message pre-filled, and we also save a copy (your name, phone number and what you asked for) in our booking system so our desk can follow up. The form tells you this before you send. Nothing else you type on the site is saved.',
             'We only ask for what we need to quote and book your trip, and we only share it with the airline, hotel, embassy or other supplier that needs it.',
             'We do not sell your data, and we do not use it for advertising profiles.',
             'You can ask to see, correct or delete your data, or withdraw consent, at any time by writing to our Grievance Officer (section 11).',
@@ -40,6 +40,7 @@ export default function Privacy() {
           head={['Personal data', 'Why we need it', 'When']}
           rows={[
             ['Name, phone / WhatsApp number, email', 'To reply to your enquiry, send quotes and keep you updated about your booking.', 'When you contact us'],
+            ['Account: name, e-mail, optional mobile number, password (as a hash)', 'To let you sign in, show your bookings and e-tickets, and fill in the booking form for you.', 'Only if you create an account'],
             ['Trip details — destination, dates, number and ages of travellers, room and meal preferences', 'To prepare an accurate quote and make the booking.', 'When you ask for a quote'],
             ['Passport details (name, number, nationality, date of birth, expiry), passport-size photos', 'Airlines, hotels abroad and embassies require them to issue tickets, vouchers and visas.', 'Only once you decide to book'],
             ['Visa documents — bank statements, salary slips, income-tax returns, employment or business proof, invitation letters, previous visas and travel history', 'Embassies and visa centres ask for these to decide your application. We pass them on; we do not assess them.', 'Only for visa applications'],

@@ -1,9 +1,11 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { AlertTriangle, CheckCircle2, Download, Loader2, MessageCircle, Phone, Printer, Plane } from 'lucide-react'
 
 import { BIZ, waLink } from '../../data/site.js'
 import { dateLabel, inr, time } from './shared.jsx'
 import { TICKET_AGENCY, downloadTicket } from './ticket.js'
+import { useAccount } from '../account/session.js'
 
 /* Confirmation: a printable e-ticket per booking. If the airline did not finish ticketing yet
    (payment is safe), we say so plainly and give the reference to quote. */
@@ -11,6 +13,7 @@ import { TICKET_AGENCY, downloadTicket } from './ticket.js'
 export default function Done({ done, contactEmail, onNew }) {
   const ok = done.results.every((r) => r.bookingId && !r.error)
   const issued = done.results.some((r) => r.bookingId && !r.error)
+  const account = useAccount()
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState('')
   const save = async () => { setSaving(true); setSaveErr(''); try { await downloadTicket(done) } catch (e) { setSaveErr(e.message || 'Could not create the PDF. Please use Print instead.') } finally { setSaving(false) } }
@@ -61,6 +64,11 @@ export default function Done({ done, contactEmail, onNew }) {
         ))}
       </div>
 
+      <p className="mt-5 rounded-2xl bg-white p-4 text-center text-[0.92rem] text-slate-700 shadow-sm">
+        {account
+          ? <>This booking is saved in <Link className="font-bold text-brand-500 underline" to="/account">My trips</Link>, with its e-ticket.</>
+          : <>Want to see this booking and your e-tickets any time? <Link className="font-bold text-brand-500 underline" to="/account">Create an account</Link> with <strong>{contactEmail || 'the same e-mail'}</strong> and it will appear in My trips.</>}
+      </p>
       {saveErr && <p role="alert" className="mt-4 text-center font-semibold text-red-700">{saveErr}</p>}
       <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
         {issued && <button type="button" className="btn btn-gold" onClick={save} disabled={saving}>{saving ? <Loader2 size={17} className="animate-spin" /> : <Download size={17} />} Download e-ticket (PDF)</button>}

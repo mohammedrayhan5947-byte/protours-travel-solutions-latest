@@ -48,6 +48,10 @@ create table if not exists flight_bookings (
   assigned_to      text,
   notes            text
 );
+-- Customer accounts: the Supabase Auth user who booked while signed in (guests leave it null).
+alter table flight_bookings add column if not exists user_id uuid;
+create index if not exists flight_bookings_user on flight_bookings (user_id, created_at desc) where user_id is not null;
+create index if not exists flight_bookings_email on flight_bookings (lower(contact_email));
 create index if not exists flight_bookings_status on flight_bookings (status, created_at desc);
 create index if not exists flight_bookings_created on flight_bookings (created_at desc);
 create index if not exists flight_bookings_phone on flight_bookings (contact_phone);
@@ -117,12 +121,13 @@ create index if not exists flight_bookings_attention on flight_bookings (created
 create or replace function crm_record_checkout(p jsonb) returns bigint language plpgsql set search_path = public, pg_temp as $$
 declare v_id bigint; v_new boolean;
 begin
-  insert into flight_bookings (order_ref, env, trace_id, status, amount_inr, razorpay_order_id, customer_name, contact_phone, contact_email, journey, route, travel_date, return_date, pax_count, pax)
+  insert into flight_bookings (order_ref, env, trace_id, status, amount_inr, razorpay_order_id, customer_name, contact_phone, contact_email, journey, route, travel_date, return_date, pax_count, pax, user_id)
   values (p->>'order_ref', p->>'env', p->>'trace_id', 'payment_pending', (p->>'amount_inr')::numeric, p->>'razorpay_order_id', p->>'customer_name', p->>'contact_phone', p->>'contact_email',
-          p->>'journey', p->>'route', nullif(p->>'travel_date', '')::date, nullif(p->>'return_date', '')::date, nullif(p->>'pax_count', '')::int, coalesce(p->'pax', '[]'::jsonb))
+          p->>'journey', p->>'route', nullif(p->>'travel_date', '')::date, nullif(p->>'return_date', '')::date, nullif(p->>'pax_count', '')::int, coalesce(p->'pax', '[]'::jsonb), nullif(p->>'user_id', '')::uuid)
   on conflict (order_ref) do update set trace_id = excluded.trace_id, amount_inr = excluded.amount_inr, razorpay_order_id = excluded.razorpay_order_id,
     customer_name = excluded.customer_name, contact_phone = excluded.contact_phone, contact_email = excluded.contact_email, journey = excluded.journey,
-    route = excluded.route, travel_date = excluded.travel_date, return_date = excluded.return_date, pax_count = excluded.pax_count, pax = excluded.pax
+    route = excluded.route, travel_date = excluded.travel_date, return_date = excluded.return_date, pax_count = excluded.pax_count, pax = excluded.pax,
+    user_id = coalesce(excluded.user_id, flight_bookings.user_id)
   returning id, (xmax = 0) into v_id, v_new;
   if v_new then
     insert into crm_events (entity, entity_id, kind, actor, data) values ('booking', v_id, 'created', 'customer', jsonb_build_object('amount', p->'amount_inr', 'route', p->>'route'));
@@ -224,6 +229,34 @@ create or replace function crm_booking_detail(p_id bigint) returns jsonb languag
   from flight_bookings b where b.id = p_id
 $$;
 
+-- ---------------------------------------------------------------------------------------------------------------
+-- Customer accounts ("My trips"). The API passes the user id from the VERIFIED login token, and the e-mail only
+-- when that e-mail is verified, so a customer sees their own bookings and nobody else's. Only customer-safe
+-- columns come back: no staff notes, assignee, internal status history or TBO error text.
+-- ---------------------------------------------------------------------------------------------------------------
+create or replace function acct_bookings(p_user uuid, p_email text) returns jsonb language sql stable set search_path = public, pg_temp as $$
+  select coalesce(jsonb_agg(to_jsonb(x) order by x.created_at desc), '[]'::jsonb) from (
+    select b.order_ref, b.created_at, b.status, b.amount_inr, b.route, b.journey, b.travel_date, b.return_date, b.pax_count, b.pnr, b.customer_name, b.env
+    from flight_bookings b
+    where p_user is not null and (b.user_id = p_user or (nullif(p_email, '') is not null and lower(b.contact_email) = lower(p_email)))
+    order by b.created_at desc limit 60
+  ) x
+$$;
+
+create or replace function acct_booking(p_user uuid, p_email text, p_ref text) returns jsonb language sql stable set search_path = public, pg_temp as $$
+  select jsonb_build_object(
+    'booking', jsonb_build_object(
+      'order_ref', b.order_ref, 'created_at', b.created_at, 'status', b.status, 'amount_inr', b.amount_inr, 'route', b.route, 'journey', b.journey,
+      'travel_date', b.travel_date, 'return_date', b.return_date, 'pax_count', b.pax_count, 'pnr', b.pnr, 'customer_name', b.customer_name, 'env', b.env,
+      'contact_email', b.contact_email, 'contact_phone', b.contact_phone,
+      'pax', (select coalesce(jsonb_agg(jsonb_build_object('type', x->>'type', 'name', x->>'name', 'ticket', x->>'ticket')), '[]'::jsonb) from jsonb_array_elements(b.pax) x),
+      'legs', (select coalesce(jsonb_agg(jsonb_build_object('pnr', l->>'pnr', 'bookingId', l->'bookingId', 'details', l->'details')), '[]'::jsonb) from jsonb_array_elements(b.legs) l)),
+    'events', coalesce((select jsonb_agg(jsonb_build_object('kind', e.kind, 'created_at', e.created_at) order by e.created_at, e.id)
+                        from crm_events e where e.entity = 'booking' and e.entity_id = b.id and e.kind in ('created', 'paid', 'payment_failed', 'ticketed', 'failed')), '[]'::jsonb))
+  from flight_bookings b
+  where p_user is not null and b.order_ref = p_ref and (b.user_id = p_user or (nullif(p_email, '') is not null and lower(b.contact_email) = lower(p_email)))
+$$;
+
 -- Staff edit (status / assignee / note) for a booking or an enquiry: change + timeline in one transaction.
 create or replace function crm_apply_update(p_entity text, p_id bigint, p_status text, p_assigned text, p_set_assigned boolean, p_note text, p_actor text) returns jsonb language plpgsql set search_path = public, pg_temp as $$
 declare cur_status text; cur_assigned text;
@@ -284,7 +317,9 @@ end $$;
 revoke all on table tbo_logs, flight_bookings, enquiries, crm_events, site_content from anon, authenticated;
 revoke all on sequence tbo_logs_id_seq, flight_bookings_id_seq, enquiries_id_seq, crm_events_id_seq from anon, authenticated;
 revoke all on function crm_record_checkout(jsonb), crm_record_paid(text, text), crm_record_payment_failed(text, text), crm_record_outcome(jsonb), crm_add_enquiry(jsonb),
-  crm_overview(), crm_booking_detail(bigint), crm_apply_update(text, bigint, text, text, boolean, text, text), crm_traces(int, int), crm_cleanup(int, int), set_updated_at()
+  crm_overview(), crm_booking_detail(bigint), crm_apply_update(text, bigint, text, text, boolean, text, text), crm_traces(int, int), crm_cleanup(int, int), set_updated_at(),
+  acct_bookings(uuid, text), acct_booking(uuid, text, text)
   from public, anon, authenticated;
 grant execute on function crm_record_checkout(jsonb), crm_record_paid(text, text), crm_record_payment_failed(text, text), crm_record_outcome(jsonb), crm_add_enquiry(jsonb),
-  crm_overview(), crm_booking_detail(bigint), crm_apply_update(text, bigint, text, text, boolean, text, text), crm_traces(int, int), crm_cleanup(int, int) to service_role;
+  crm_overview(), crm_booking_detail(bigint), crm_apply_update(text, bigint, text, text, boolean, text, text), crm_traces(int, int), crm_cleanup(int, int),
+  acct_bookings(uuid, text), acct_booking(uuid, text, text) to service_role;

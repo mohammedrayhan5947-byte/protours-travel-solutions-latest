@@ -23,6 +23,7 @@ export const recordCheckout = (b) => safe(() => {
   return rpc('crm_record_checkout', {
     p: {
       order_ref: b.orderRef,
+      user_id: b.userId || null,
       env: IS_LIVE ? 'live' : 'staging',
       trace_id: b.traceId || null,
       amount_inr: b.amount,

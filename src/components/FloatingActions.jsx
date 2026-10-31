@@ -42,6 +42,7 @@ export default function FloatingActions() {
 
   // The back office (/crm) is staff-only: no customer contact buttons over its tables.
   if (pathname === '/crm') return null
+  if (pathname === '/account') return null // sign-in forms and e-tickets: nothing floating over them
 
   return (
     <>

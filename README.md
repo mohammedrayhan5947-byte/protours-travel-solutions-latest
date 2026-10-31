@@ -119,13 +119,34 @@ The session lives in the browser tab only. Rotate the secret key if it is ever p
 
 ### Security checklist for the owner (things only the Supabase dashboard can do)
 
-1. Authentication, Sign In / Providers: turn **off** "Allow new users to sign up". Staff accounts are created by you.
+1. Customers sign up on the same Supabase project (see "Customer accounts" below), so sign-ups stay **on** and "Confirm email" stays **on**.
+   Staff access is separate: a login only opens the CRM if its e-mail is on `CRM_ALLOWED_EMAILS` *and* confirmed (checked against Supabase, not the token).
 2. Use passwords of 12+ characters for staff (`scripts/crm-add-staff.mjs` generates one) and never reuse them.
 3. Keep `CRM_ALLOWED_EMAILS` to the people who need it; remove an e-mail the day someone leaves
    (their current session ends within the hour, and the 30-minute idle sign-out applies).
 4. Rotate the Supabase **secret** key and the database password if they were ever shared in chat or e-mail.
 5. Tables, functions and sequences are closed to the public key (row-level security plus revoked privileges); if you add
    tables later, enable row-level security on them and revoke `anon` / `authenticated` the same way.
+
+## Customer accounts: sign up, sign in, My trips: `/account`
+
+Customers can book as guests or create an account (Supabase Auth, called from `api/account.js`; the browser never talks to Supabase).
+An account shows **My trips**: every booking made while signed in, plus older guest bookings made with the same *confirmed* e-mail,
+with status, tickets, a progress timeline and the PDF e-ticket. The customer's token is attached to checkout (`api/flights.js` verifies it
+and passes the user id, never trusting the request body). Customers see only customer-safe columns (`acct_bookings`, `acct_booking` in
+`supabase/schema.sql`): no staff notes, assignee or TBO error text.
+
+One-time setup (Supabase dashboard + one SQL run):
+
+1. Run `supabase/schema.sql` again (adds `flight_bookings.user_id` and the two `acct_*` functions; safe to re-run).
+2. Authentication, Sign In / Providers, Email: **Allow new users to sign up** ON, **Confirm email** ON.
+3. Authentication, URL Configuration: Site URL = `https://www.protoursandtravelsolutions.com`; add `https://www.protoursandtravelsolutions.com/account`
+   under Redirect URLs (confirmation and password-reset links return there). Optional env `SITE_URL` overrides the host used in those links.
+4. Authentication, SMTP Settings: set a real SMTP provider (Resend, Brevo, Amazon SES...). Supabase's built-in mail sender allows only a few
+   e-mails per hour, which is fine for testing and not for customers. Edit the e-mail templates (Confirm signup, Reset password) to carry your name.
+
+Limits and notes: customer sessions are kept in the browser (localStorage) so they stay signed in; sign-in guesses are throttled per IP and per
+e-mail; password resets and sign-ups are rate-limited; an account is deleted from Authentication, Users in the dashboard.
 
 ## Motion & accessibility rules
 

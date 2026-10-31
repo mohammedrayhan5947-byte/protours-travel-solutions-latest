@@ -1,5 +1,6 @@
 import { search, quote, checkout, ticket, calendar, fareRules } from './_lib/flights.js'
 import { TboError, IS_LIVE, flushLogs } from './_lib/tbo.js'
+import { optionalUser } from './_lib/customer.js'
 
 /**
  * Vercel serverless function — the website's only door to the TBO Air API.
@@ -23,6 +24,9 @@ export default async function handler(req, res) {
   if (!flightsEnabled()) return res.status(503).json({ error: 'Online flight booking is not switched on yet. Please call or WhatsApp us.' })
 
   const { action, ...payload } = req.body || {}
+  // A booking made while signed in is linked to that customer. The id comes from the verified token, never from the request body.
+  delete payload.userId
+  if (action === 'checkout') payload.userId = (await optionalUser(req))?.sub || null
   const fn = ACTIONS[action]
   if (!fn) return res.status(400).json({ error: 'Unknown action.' })
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, Clock, Loader2, Luggage, Lock, ShieldCheck, Utensils } from 'lucide-react'
 
+import { useAccount } from '../account/session.js'
 import { AirlineMark, FEE_TYPE, PenaltyBar, cityOf, dateLabel, dur, inr, longDate, minutesBetween, time, todayIso, ui } from './shared.jsx'
 
 /* Review + travellers: itinerary and fare rules, traveller forms, meal/baggage cards, contact,
@@ -254,7 +255,10 @@ export default function Review({ q, searchedAt, onBack, onPay, busy }) {
   const initial = []
   for (const [t, n] of [[1, q.pax.adults], [2, q.pax.children], [3, q.pax.infants]]) for (let i = 0; i < n; i++) initial.push({ paxType: t, title: TITLES[t][0], firstName: '', lastName: '', dob: '', passportNo: '', passportExpiry: '', passportIssue: '', passportCountry: 'IN', nationality: 'IN', pan: '', guardian: { title: 'Mr', firstName: '', lastName: '', pan: '' } })
   const [pax, setPax] = useState(initial)
-  const [contact, setContact] = useState({ phone: '', email: '', address: '', city: 'Bengaluru' })
+  const account = useAccount()
+  const [contact, setContact] = useState({ phone: account?.profile?.phone || '', email: account?.profile?.email || '', address: '', city: 'Bengaluru' })
+  // signing in (here or in another tab) fills the e-mail and mobile, but never overwrites what was already typed
+  useEffect(() => { if (account?.profile) setContact((c) => ({ ...c, email: c.email || account.profile.email || '', phone: c.phone || account.profile.phone || '' })) }, [account])
   const [gstOn, setGstOn] = useState(gstMandatory)
   const [gst, setGst] = useState({ number: '', company: '', address: '', phone: '', email: '' })
   const [choices, setChoices] = useState(q.legs.map(() => initial.map(() => ({ baggage: [], meals: [] }))))
@@ -335,6 +339,11 @@ export default function Review({ q, searchedAt, onBack, onPay, busy }) {
         <AddOns q={q} pax={pax} choices={choices} pick={pick} n="3" />
 
         <Section n={addOnsAvailable ? '4' : '3'} title="Contact details" right={<span className="text-[0.8rem] font-semibold text-slate-500">Your e-ticket is sent here</span>}>
+          {account ? (
+            <p className="mb-3 flex items-center gap-2 rounded-lg bg-palm/10 px-3 py-2 text-[0.85rem] font-semibold text-palm"><ShieldCheck size={15} /> Signed in as {account.profile?.email}. This booking will appear in My trips.</p>
+          ) : (
+            <p className="mb-3 rounded-lg bg-sand px-3 py-2 text-[0.85rem] text-slate-700">Have an account? <Link className="font-bold text-brand-500 underline" to="/account" target="_blank" rel="noopener">Sign in</Link> (opens in a new tab, your details here stay) to see this booking in My trips. Or continue as a guest.</p>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
             <div><label className={label} htmlFor="em">Email</label><input id="em" type="email" className={input} required autoComplete="email" value={contact.email} onChange={(e) => setContact((c) => ({ ...c, email: e.target.value }))} /></div>
             <div><label className={label} htmlFor="ph">Mobile number</label><input id="ph" type="tel" className={input} required inputMode="numeric" autoComplete="tel" pattern="[0-9+ ]{10,14}" value={contact.phone} onChange={(e) => setContact((c) => ({ ...c, phone: e.target.value }))} /></div>

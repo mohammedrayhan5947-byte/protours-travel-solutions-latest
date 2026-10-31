@@ -299,7 +299,7 @@ const ssrKey = (x) => [x.Origin, x.Destination, x.WayType, x.Code, x.FlightNumbe
 
 /* ---------------- checkout: validate passengers, SSR (last call), payment order ---------------- */
 
-export async function checkout({ quote: token, passengers, contact, gst, choices }) {
+export async function checkout({ quote: token, passengers, contact, gst, choices, userId }) {
   const q = unseal(token, 'fare quote')
   const paxList = validatePassengers(passengers, q, contact)
   if (q.legs.some((l) => l.isGSTMandatory) && !gst?.number) throw bad('This fare needs your company GST details.')
@@ -339,7 +339,7 @@ export async function checkout({ quote: token, passengers, contact, gst, choices
 
   const checkoutToken = seal({ session: q.session, payloads, amount, orderId: payment.orderId, orderRef, contact: paxList.contact }, 15 * 60 * 1000)
   await recordCheckout({
-    orderRef, traceId: q.session.traceId, amount, orderId: payment.orderId, contact: paxList.contact, pax: paxList, journey: q.journey,
+    userId, orderRef, traceId: q.session.traceId, amount, orderId: payment.orderId, contact: paxList.contact, pax: paxList, journey: q.journey,
     route: q.legs.map((l) => l.route).filter(Boolean).join(' | '),
     travelDate: q.legs.map((l) => l.depDate).filter(Boolean).sort()[0],
     returnDate: q.legs.length > 1 ? q.legs.at(-1).depDate : q.legs[0]?.lastDepDate !== q.legs[0]?.depDate ? q.legs[0]?.lastDepDate : null,
