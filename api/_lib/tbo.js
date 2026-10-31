@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -51,6 +52,11 @@ export const END_USER_IP = process.env.TBO_END_USER_IP || '192.168.10.10'
 
 const LOG_MODE = process.env.TBO_LOG_SEARCH || 'summary' // full | summary
 const LOG_DIR = process.env.VERCEL ? null : path.resolve(process.cwd(), '.data', 'tbo-logs')
+
+/* The customer's IP, for the gateway's call log only. api/flights.js wraps each request in withEndUserIp();
+   post() then adds an X-End-User-IP header, but only on calls that go through the relay (TBO itself never gets it). */
+const callerCtx = new AsyncLocalStorage()
+export const withEndUserIp = (ip, fn) => callerCtx.run({ ip: String(ip || '').slice(0, 64) }, fn)
 
 export class TboError extends Error {
   constructor(message, { code, method, status } = {}) {
@@ -121,6 +127,7 @@ async function post(url, method, body, traceId, timeoutMs = 60000) {
         // the gateway's own token (TBO ignores it). The gateway answers its own errors as plain text,
         // which fails JSON.parse below, so a relay problem can never look like a TBO success.
         ...(RELAY && RELAY_TOKEN && url.startsWith(RELAY) ? { Authorization: `Bearer ${RELAY_TOKEN}` } : {}),
+        ...(RELAY && url.startsWith(RELAY) && callerCtx.getStore()?.ip ? { 'X-End-User-IP': callerCtx.getStore().ip } : {}),
       },
       body: JSON.stringify(body),
       signal: ctrl.signal,
