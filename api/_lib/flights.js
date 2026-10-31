@@ -105,7 +105,7 @@ const routeOf = (segments) => (segments || []).map((j) => `${j?.[0]?.Origin?.Air
 /** Cancellation / date-change fees for one search result, before the customer commits to it. Optional: never blocks. */
 export async function fareRules({ session: token, resultIndex }) {
   const s = unseal(token)
-  if (!resultIndex || typeof resultIndex !== 'string' || resultIndex.length > 400) throw bad('Choose a fare.')
+  if (!resultIndex || typeof resultIndex !== 'string' || resultIndex.length > 3000) throw bad('Choose a fare.')
   const rule = await air('FareRule', s, { ResultIndex: resultIndex }, { allowError: true }).catch(() => null)
   return { rules: (rule?.FareRules || []).slice(0, 4).map((f) => ({ origin: f.Origin, destination: f.Destination, fareBasis: f.FareBasisCode, mini: f.MiniFareRules })) }
 }

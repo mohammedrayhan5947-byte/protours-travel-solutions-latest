@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ArrowRight, BadgeCheck, Check, ChevronDown, ChevronUp, Filter, Loader2, Luggage, Pencil, Plane, RotateCcw, Users, X } from 'lucide-react'
 
 import SearchWidget, { useMonthFares } from './Search.jsx'
-import { addDays, AirlineMark, bucketOf, cityOf, dateLabel, dayMonth, dur, inr, minutesBetween, FeeSummary, PenaltyBar, time, TIME_BUCKETS, todayIso, useFees, useSeen, weekday } from './shared.jsx'
+import { addDays, AirlineMark, bucketOf, cityOf, dateLabel, dayMonth, dur, inr, minutesBetween, FEE_TYPE, FeeSummary, PenaltyBar, time, TIME_BUCKETS, todayIso, useFees, useSeen, weekday } from './shared.jsx'
 
 /* Results: modify-search bar, ±3-day fare strip, filters, sort tabs, expandable flight cards
    and a sticky "book" bar for round trips. All filtering/sorting happens in the browser on the
@@ -149,7 +149,7 @@ function Fees({ session, fare }) {
   const { state, rules } = useFees(session, fare.resultIndex, seen)
   return (
     <div ref={ref} className="w-full">
-      {state === 'done' ? <div className="border-t border-slate-100 pt-1">{rules.map((r, i) => <div key={i}><PenaltyBar rules={r.mini.Rules} type={1} title="Cancellation fee" /><PenaltyBar rules={r.mini.Rules} type={2} title="Date change fee" /></div>)}</div>
+      {state === 'done' ? <div className="border-t border-slate-100 pt-1">{rules.map((r, i) => <div key={i}><PenaltyBar rules={r.mini.Rules} type={FEE_TYPE.cancel} title="Cancellation fee" /><PenaltyBar rules={r.mini.Rules} type={FEE_TYPE.change} title="Date change fee" /></div>)}</div>
         : state === 'none' ? <p className="mt-2 text-[0.8rem] text-slate-500">Fees not published by the airline for this fare.</p>
         : <p className="mt-2 flex items-center gap-2 text-[0.8rem] text-slate-500"><Loader2 size={13} className="animate-spin" /> Getting the airline's fees…</p>}
     </div>

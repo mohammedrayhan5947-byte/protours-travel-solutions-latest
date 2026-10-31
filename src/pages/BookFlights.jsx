@@ -4,7 +4,7 @@ import { AlertTriangle, BadgeCheck, Headset, Loader2, Plane, ShieldCheck } from 
 
 import { BIZ, waLink } from '../data/site.js'
 import SearchWidget from './flights/Search.jsx'
-import { Stepper, api } from './flights/shared.jsx'
+import { Stepper, api, cityOf, dateLabel } from './flights/shared.jsx'
 
 const Results = lazy(() => import('./flights/Results.jsx'))
 const Review = lazy(() => import('./flights/Review.jsx'))
@@ -54,6 +54,7 @@ export default function BookFlights() {
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [form, setForm] = useState(null)
+  const [pending, setPending] = useState(null) // the search being run, for the loading screen
   const [found, setFound] = useState(null)
   const [searchedAt, setSearchedAt] = useState(0)
   const [picked, setPicked] = useState([])
@@ -91,8 +92,9 @@ export default function BookFlights() {
     }
   }
 
-  const search = (f) =>
-    run('search', async () => {
+  const search = (f) => {
+    setPending(f)
+    return run('search', async () => {
       const r = await api('search', f)
       setForm(f)
       setFound(r)
@@ -102,6 +104,7 @@ export default function BookFlights() {
       if (view !== 'results') go('results')
       else window.scrollTo({ top: 0, behavior: 'smooth' })
     })
+  }
 
   const book = (picks) =>
     run('quote', async () => {
@@ -193,8 +196,40 @@ export default function BookFlights() {
       ) : null}
 
       {(busy === 'pay' || busy === 'ticket') && <Processing stage={busy} />}
-      {busy === 'search' && view === 'results' && <p role="status" className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-full bg-navy-950 px-5 py-2.5 text-[0.9rem] font-semibold text-white shadow-xl"><Loader2 className="mr-2 inline animate-spin" size={16} />Searching flights…</p>}
+      {busy === 'search' && pending && <SearchLoading f={pending} />}
     </>
+  )
+}
+
+const WAIT_NOTES = ['Checking every airline for the best fares…', 'Comparing prices and baggage…', 'Almost there, collecting cancellation rules…', 'Still searching. The airlines are slow today, thanks for waiting.']
+
+/** Full-screen wait while TBO searches (usually 6 to 9 seconds): route, dates and a rolling status line. */
+function SearchLoading({ f }) {
+  const [n, setN] = useState(0)
+  useEffect(() => { const t = setInterval(() => setN((x) => Math.min(x + 1, WAIT_NOTES.length - 1)), 2600); return () => clearInterval(t) }, [])
+  const segs = f.segments || []
+  const first = segs[0], last = segs.at(-1)
+  const pax = (f.adults || 0) + (f.children || 0) + (f.infants || 0)
+  return (
+    <div role="status" aria-live="polite" aria-label="Searching flights" className="fixed inset-0 z-[45] grid place-items-center overflow-y-auto bg-paper p-6">
+      <div className="w-full max-w-lg text-center">
+        <div className="relative mx-auto h-44 w-72 overflow-hidden" aria-hidden>
+          <div className="animate-drift absolute top-6 left-4 h-10 w-24 rounded-full bg-sky-100" />
+          <div className="animate-drift absolute top-20 right-2 h-12 w-32 rounded-full bg-sky-100/80 [animation-delay:-2s]" />
+          <div className="animate-drift absolute top-28 left-16 h-8 w-20 rounded-full bg-sky-50 [animation-delay:-1s]" />
+          <div className="animate-fly absolute inset-x-0 top-14 grid place-items-center"><Plane size={64} className="rotate-45 fill-brand-500 text-brand-500" /></div>
+        </div>
+        <h2 className="mt-2 font-display text-[1.5rem] font-bold text-ink">Hold on, we’re fetching flights for you</h2>
+        {first && (
+          <p className="mt-3 text-[1rem] font-semibold text-navy-900">
+            {cityOf(first.from)} → {cityOf(f.journeyType === 'multicity' ? last.to : first.to)}
+            <span className="font-normal text-slate-600"> · {dateLabel(first.date)}{f.journeyType === 'return' && f.returnDate ? ` – ${dateLabel(f.returnDate)}` : ''} · {pax} traveller{pax > 1 ? 's' : ''}</span>
+          </p>
+        )}
+        <p className="mt-4 min-h-6 text-[0.92rem] text-slate-600">{WAIT_NOTES[n]}</p>
+        <div className="mx-auto mt-4 h-1.5 w-56 overflow-hidden rounded-full bg-slate-200" aria-hidden><div className="animate-drift h-full w-1/2 rounded-full bg-brand-500" /></div>
+      </div>
+    </div>
   )
 }
 

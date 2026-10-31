@@ -86,10 +86,15 @@ export function Stepper({ current }) {
 
 /* ISO-8601 duration ("P1DT2H", "PT3H") to hours; null when unreadable. */
 function hoursOf(d) {
-  const m = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?)?$/.exec(String(d || ''))
-  return m ? (Number(m[1] || 0) * 24 + Number(m[2] || 0) + Number(m[3] || 0) / 60) : null
+  const m = /^P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(String(d || ''))
+  return m ? (Number(m[1] || 0) * 168 + Number(m[2] || 0) * 24 + Number(m[3] || 0) + Number(m[4] || 0) / 60 + Number(m[5] || 0) / 3600) : null
 }
 const hoursLabel = (h) => (h >= 48 ? `${Math.round(h / 24)} days` : h >= 1 ? `${Math.round(h)} h` : `${Math.round(h * 60)} min`)
+
+/* TBO's MiniFareRules.Type. Its docs don't name the values; what it returns (0 = the higher, time-dependent fee, 1 = a flat
+   one, e.g. SpiceJet 4,899 / 3,899 vs 2,999, matching what other sites show) says 0 = cancellation, 1 = date change.
+   CONFIRM WITH TBO before going live; swap these two numbers if they say otherwise. */
+export const FEE_TYPE = { cancel: 0, change: 1 }
 
 /* Cancellation / date-change fee by how long before departure, drawn as a bar like the big sites do.
    Uses the airline's own mini fare rules; shows nothing when they are missing or unreadable. */
@@ -103,7 +108,7 @@ export function PenaltyBar({ rules, type, title }) {
   return (
     <div className="mt-3">
       <p className="mb-1 text-[0.85rem] font-bold text-ink">{title}</p>
-      <div className="flex h-2.5 overflow-hidden rounded-full" aria-hidden>{segs.map((x, i) => <span key={i} className={`flex-1 ${i === segs.length - 1 && x.fee > 0 ? 'bg-red-500' : colour(x.fee)}`} />)}</div>
+      <div className="flex h-2.5 overflow-hidden rounded-full" aria-hidden>{segs.map((x, i) => <span key={i} className={`flex-1 ${i === segs.length - 1 && segs.length > 1 && x.fee > 0 ? 'bg-red-500' : colour(x.fee)}`} />)}</div>
       <ul className="mt-2 grid gap-1 text-[0.8rem] text-slate-700">
         {segs.map((x, i) => <li key={i} className="flex justify-between gap-3 rounded-lg bg-sand/60 px-3 py-1.5"><span>{x.to == null ? `More than ${hoursLabel(x.from)} before` : x.from ? `${hoursLabel(x.from)} to ${hoursLabel(x.to)} before` : `Up to ${hoursLabel(x.to)} before`} departure</span><span className="font-bold">{x.fee === 0 ? 'Free' : `${inr(x.fee)} + our fee`}</span></li>)}
       </ul>
@@ -170,12 +175,12 @@ export function FeeSummary({ session, fare }) {
     <div ref={ref} className="mt-3 rounded-xl border border-slate-200 bg-sand/50 p-3 text-[0.8rem]" aria-live="polite">
       {state === 'done' ? (
         <div className="grid gap-3 sm:grid-cols-2">
-          {[[1, 'Cancellation fee'], [2, 'Date change fee']].map(([t, title]) => {
+          {[[FEE_TYPE.cancel, 'Cancellation fee'], [FEE_TYPE.change, 'Date change fee']].map(([t, title]) => {
             const segs = segsOf(mini, t)
             return (
               <div key={t}>
                 <p className="mb-1 font-bold text-ink">{title}</p>
-                {segs.length ? <ul className="grid gap-0.5">{segs.map((x, i) => <li key={i} className="flex justify-between gap-2 text-slate-700"><span>{shortWindow(x)}</span><span className={`font-bold ${x.fee === 0 ? 'text-palm' : 'text-ink'}`}>{x.fee === 0 ? 'Free' : inr(x.fee)}</span></li>)}</ul> : <p className="text-slate-500">Not published by the airline.</p>}
+                {segs.length ? <ul className="grid gap-0.5">{segs.map((x, i) => <li key={i} className="flex justify-between gap-2 text-slate-700"><span>{shortWindow(x)}</span><span className={`font-bold ${x.fee === 0 ? 'text-palm' : 'text-ink'}`}>{x.fee === 0 ? 'Free' : inr(x.fee)}</span></li>)}</ul> : <p className="text-slate-500">Not shown by the airline for this fare.</p>}
               </div>
             )
           })}

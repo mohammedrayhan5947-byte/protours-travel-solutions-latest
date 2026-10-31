@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronUp, Clock, Loader2, Luggage, Lock, ShieldCheck, Utensils } from 'lucide-react'
 
-import { AirlineMark, PenaltyBar, cityOf, dateLabel, dur, inr, longDate, minutesBetween, time, todayIso, ui } from './shared.jsx'
+import { AirlineMark, FEE_TYPE, PenaltyBar, cityOf, dateLabel, dur, inr, longDate, minutesBetween, time, todayIso, ui } from './shared.jsx'
 
 /* Review + travellers: itinerary and fare rules, traveller forms, meal/baggage cards, contact,
    and a sticky fare summary with a countdown (TBO holds a search for 15 minutes).
@@ -92,7 +92,7 @@ function FareRules({ legs }) {
       {legs.some((l) => (l.rules || []).some((r) => r.mini?.Rules?.length)) && (
         <div className="px-4 pb-3">
           {legs.flatMap((l, li) => (l.rules || []).map((r, ri) => (
-            <div key={`${li}-${ri}`}><p className="text-[0.8rem] font-semibold text-slate-500">{r.origin} → {r.destination}</p><PenaltyBar rules={r.mini?.Rules} type={1} title="Cancellation fee" /><PenaltyBar rules={r.mini?.Rules} type={2} title="Date change fee" /></div>
+            <div key={`${li}-${ri}`}><p className="text-[0.8rem] font-semibold text-slate-500">{r.origin} → {r.destination}</p><PenaltyBar rules={r.mini?.Rules} type={FEE_TYPE.cancel} title="Cancellation fee" /><PenaltyBar rules={r.mini?.Rules} type={FEE_TYPE.change} title="Date change fee" /></div>
           )))}
         </div>
       )}
@@ -103,7 +103,7 @@ function FareRules({ legs }) {
             <div key={i} className="mb-3">
               <p className="font-bold">{r.airline} {r.origin}–{r.destination} · {r.fareBasis}</p>
               {(r.mini?.Rules || []).map((m, k) => (
-                <p key={k}>{m.Type === 1 ? 'Cancellation' : m.Type === 2 ? 'Date change' : 'Rule'} {m.FromDuration ? `from ${m.FromDuration.replace(/^P(T)?/, '')}` : ''}{m.ToDuration ? ` to ${m.ToDuration.replace(/^P(T)?/, '')}` : ''} before departure: {(m.PaxPenalties || []).map((p) => inr(p.AirlineFee)).join(', ')} airline fee + our service fee</p>
+                <p key={k}>{m.Type === FEE_TYPE.cancel ? 'Cancellation' : m.Type === FEE_TYPE.change ? 'Date change' : 'Rule'} {m.FromDuration ? `from ${m.FromDuration.replace(/^P(T)?/, '')}` : ''}{m.ToDuration ? ` to ${m.ToDuration.replace(/^P(T)?/, '')}` : ''} before departure: {(m.PaxPenalties || []).map((p) => inr(p.AirlineFee)).join(', ')} airline fee + our service fee</p>
               ))}
               {/* Fare rule text from TBO is airline-supplied HTML; render as text only. */}
               <p className="mt-1 whitespace-pre-line text-slate-700">{String(r.text || '').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').trim().slice(0, 1800)}</p>
