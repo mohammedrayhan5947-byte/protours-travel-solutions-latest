@@ -103,6 +103,30 @@ Security notes: tables have row-level security with no public policies, so the b
 `/api/crm`, which checks the staff token's signature (Supabase public keys), expiry and the allow-list on every call.
 The session lives in the browser tab only. Rotate the secret key if it is ever pasted somewhere it should not be.
 
+### Running it on the free tiers (Vercel Hobby + Supabase Free)
+
+- **One database trip per action.** Dashboard, booking panel, saves, enquiries and the booking path each call a single
+  function in `supabase/schema.sql` instead of 2 to 5 queries (Vercel to Supabase crosses a region, so trips cost time).
+  TBO logs are written in one bulk insert per request, and big Search replies are stored as a summary.
+- **Daily cron (`/api/cron`, set `CRON_SECRET` in Vercel).** The free Vercel plan allows one cron run per day. It keeps the
+  free Supabase project awake (Supabase pauses free projects after a week without activity, which would switch off booking
+  records and the CRM), deletes TBO logs older than `TBO_LOG_RETENTION_DAYS` (default 60) so the 500 MB database never
+  fills, and deletes enquiries older than 12 months that did not become a booking.
+- **Dashboard refresh** is every 5 minutes and only while the tab is visible.
+- **Function region.** The TBO gateway is in Mumbai. In Vercel, Project Settings, Functions, set the region to Mumbai
+  (`bom1`) if your plan offers it: every TBO call then travels a few kilometres instead of across the world.
+- **Vercel Hobby is for non-commercial use**, and its limits change: check vercel.com/docs/limits before launch.
+
+### Security checklist for the owner (things only the Supabase dashboard can do)
+
+1. Authentication, Sign In / Providers: turn **off** "Allow new users to sign up". Staff accounts are created by you.
+2. Use passwords of 12+ characters for staff (`scripts/crm-add-staff.mjs` generates one) and never reuse them.
+3. Keep `CRM_ALLOWED_EMAILS` to the people who need it; remove an e-mail the day someone leaves
+   (their current session ends within the hour, and the 30-minute idle sign-out applies).
+4. Rotate the Supabase **secret** key and the database password if they were ever shared in chat or e-mail.
+5. Tables, functions and sequences are closed to the public key (row-level security plus revoked privileges); if you add
+   tables later, enable row-level security on them and revoke `anon` / `authenticated` the same way.
+
 ## Motion & accessibility rules
 
 - Animate only `transform`, `opacity` and `clip-path`. No smooth-scroll libraries, no `touch-action`,

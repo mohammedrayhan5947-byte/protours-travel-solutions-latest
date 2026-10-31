@@ -64,22 +64,28 @@ export class TboError extends Error {
 /* ---------- logging ---------- */
 
 let seq = 0
-// Writes still in flight: a serverless function can be frozen once it has replied, so the API handler
-// awaits flushLogs() before answering.
-const pending = new Set()
-export const flushLogs = () => Promise.allSettled([...pending])
+// Log rows wait here and go to Supabase in ONE bulk insert (a booking makes dozens of TBO calls; one insert
+// per call would cost dozens of round trips and database requests). The API handler awaits flushLogs() before
+// replying, because a serverless function can be frozen once it has answered; Book and Ticket flush at once.
+const LOG_ROWS = []
 
-/** Copies every request/response to Supabase (tbo_logs) when SUPABASE_URL + SUPABASE_SERVICE_KEY are set. */
-function toSupabase(method, traceId, kind, body) {
+export async function flushLogs() {
   const url = process.env.SUPABASE_URL, key = process.env.SUPABASE_SERVICE_KEY
-  if (!url || !key) return
-  const p = fetch(`${url}/rest/v1/tbo_logs`, {
+  const rows = LOG_ROWS.splice(0)
+  if (!rows.length || !url || !key) return
+  await fetch(`${url}/rest/v1/tbo_logs`, {
     method: 'POST',
     headers: { apikey: key, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
-    body: JSON.stringify({ env: ENV, trace_id: traceId || null, method, kind, body }),
+    body: JSON.stringify(rows),
     signal: AbortSignal.timeout(8000),
-  }).catch(() => {}).finally(() => pending.delete(p))
-  pending.add(p)
+  }).catch(() => {})
+}
+
+/** Queues a request/response for Supabase (tbo_logs) when SUPABASE_URL + SUPABASE_SERVICE_KEY are set. */
+function toSupabase(method, traceId, kind, body) {
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) return
+  LOG_ROWS.push({ env: ENV, trace_id: traceId || null, method, kind, body })
+  if (LOG_ROWS.length > 300) LOG_ROWS.splice(0, LOG_ROWS.length - 300) // never grow without bound
 }
 
 /** A Search reply can be several MB: keep a summary in the database unless TBO_LOG_SEARCH=full. */
@@ -90,18 +96,21 @@ function trimBig(body) {
 }
 
 function log(method, traceId, kind, body) {
-  const safe = redact(body)
-  toSupabase(method, traceId, kind, BIG.has(method) && kind === 'response' && LOG_MODE !== 'full' ? trimBig(body) : safe)
+  // masked copy, made only when needed: a Search reply can be megabytes
+  let masked
+  const safeBody = () => (masked ??= redact(body))
+  const trimmed = BIG.has(method) && kind === 'response' && LOG_MODE !== 'full'
+  toSupabase(method, traceId, kind, trimmed ? trimBig(body) : safeBody())
   if (!LOG_DIR) {
     // Vercel: keep logs short — full payloads only for booking-side calls.
-    if (kind === 'response' && method !== 'Search') console.log(`[tbo] ${method} ${traceId || ''} ${JSON.stringify(safe).slice(0, 2000)}`)
+    if (kind === 'response' && method !== 'Search') console.log(`[tbo] ${method} ${traceId || ''} ${JSON.stringify(safeBody()).slice(0, 2000)}`)
     return
   }
   try {
     const dir = path.join(LOG_DIR, traceId || 'no-trace')
     fs.mkdirSync(dir, { recursive: true })
     const big = method === 'Search' && kind === 'response' && LOG_MODE !== 'full'
-    const data = big ? { note: 'Search response trimmed; set TBO_LOG_SEARCH=full for the whole payload', ResponseStatus: body?.Response?.ResponseStatus, TraceId: body?.Response?.TraceId, Error: body?.Response?.Error, resultCount: (body?.Response?.Results || []).map((r) => r.length) } : safe
+    const data = big ? { note: 'Search response trimmed; set TBO_LOG_SEARCH=full for the whole payload', ResponseStatus: body?.Response?.ResponseStatus, TraceId: body?.Response?.TraceId, Error: body?.Response?.Error, resultCount: (body?.Response?.Results || []).map((r) => r.length) } : safeBody()
     const n = String(++seq).padStart(3, '0')
     fs.writeFileSync(path.join(dir, `${Date.now()}-${n}-${method}-${kind}.json`), JSON.stringify(data, null, 2))
   } catch {
@@ -109,10 +118,20 @@ function log(method, traceId, kind, body) {
   }
 }
 
+// On the live system the stored logs must not hold passport numbers, PAN or dates of birth: the airline already
+// has them, and a log is a copy nobody needs to find in a database dump. (Staging keeps them: TBO certification
+// wants complete JSON.) The login password is always masked.
+const SENSITIVE = /^(PassportNo|PassportExpiry|PassportIssueDate|PassportIssueCountryCode|DateOfBirth|PAN|GuardianPAN)$/i
+function maskDeep(v, depth = 0) {
+  if (depth > 14 || v === null || typeof v !== 'object') return v
+  if (Array.isArray(v)) return v.map((x) => maskDeep(x, depth + 1))
+  return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, SENSITIVE.test(k) && x ? '***' : maskDeep(x, depth + 1)]))
+}
+
 function redact(body) {
   if (!body || typeof body !== 'object') return body
-  if (!('Password' in body)) return body
-  return { ...body, Password: '***' }
+  const b = 'Password' in body ? { ...body, Password: '***' } : body
+  return IS_LIVE ? maskDeep(b) : b
 }
 
 /* ---------- transport ---------- */
@@ -155,6 +174,7 @@ async function post(url, method, body, traceId, timeoutMs = 60000) {
   const tid = traceId || json?.Response?.TraceId
   if (late) log(method, tid, 'request', body)
   log(method, tid, 'response', json)
+  if (method === 'Book' || method === 'Ticket') await flushLogs() // keep the booking's record even if the function is cut off later
   return json
 }
 

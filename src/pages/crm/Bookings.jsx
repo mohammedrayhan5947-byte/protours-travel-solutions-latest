@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Download, Loader2, MessageCircle, Phone, RefreshCw, Search, Mail, Radar } from 'lucide-react'
 
 import { crm, download } from './api.js'
-import { BOOKING_STATUS, Card, Drawer, Empty, Err, Pager, Pill, Timeline, btnDark, btnLight, dayLabel, inr, input, waTo, when, whenFull } from './ui.jsx'
+import { BOOKING_STATUS, Card, Drawer, Empty, Err, Pager, Pill, Timeline, btnDark, btnLight, dayLabel, inr, input, mailTo, waTo, when, whenFull } from './ui.jsx'
 import { Json } from './Logs.jsx'
 
 const STATUSES = Object.keys(BOOKING_STATUS)
@@ -96,7 +96,7 @@ export function BookingDrawer({ id, onClose, onChanged }) {
             <div className="mt-3 flex flex-wrap gap-2">
               {b.contact_phone && <a className={btnLight} href={waTo(b.contact_phone, `Hi ${b.customer_name || ''}, about your booking ${b.order_ref}`)} target="_blank" rel="noreferrer"><MessageCircle size={16} /> WhatsApp</a>}
               {b.contact_phone && <a className={btnLight} href={`tel:${b.contact_phone}`}><Phone size={16} /> Call</a>}
-              {b.contact_email && <a className={btnLight} href={`mailto:${b.contact_email}?subject=${encodeURIComponent('Your booking ' + b.order_ref)}`}><Mail size={16} /> E-mail</a>}
+              {b.contact_email && <a className={btnLight} href={mailTo(b.contact_email, 'Your booking ' + b.order_ref)}><Mail size={16} /> E-mail</a>}
             </div>
           </Card>
 

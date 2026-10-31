@@ -44,11 +44,15 @@ export default function Dashboard({ go, onOpenBooking, onOpenEnquiry }) {
   const [o, setO] = useState(null)
   const [err, setErr] = useState('')
   useEffect(() => {
-    let live = true
-    const load = () => crm('overview').then((r) => live && setO(r)).catch((e) => live && setErr(e.message))
+    // Refresh every 5 minutes, but only while the tab is visible, and straight away when you come back to a stale one.
+    // (Every refresh is a function call on a metered free plan; a hidden tab should cost nothing.)
+    let live = true, last = 0
+    const load = () => { last = Date.now(); crm('overview').then((r) => live && (setO(r), setErr(''))).catch((e) => live && setErr(e.message)) }
     load()
-    const t = setInterval(load, 60_000)
-    return () => { live = false; clearInterval(t) }
+    const t = setInterval(() => { if (!document.hidden) load() }, 5 * 60_000)
+    const onVisible = () => { if (!document.hidden && Date.now() - last > 2 * 60_000) load() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => { live = false; clearInterval(t); document.removeEventListener('visibilitychange', onVisible) }
   }, [])
   if (!o) return err ? <Err>{err}</Err> : <Loader2 className="mx-auto mt-10 animate-spin" />
   const b = o.bookings, e = o.enquiries

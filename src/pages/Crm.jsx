@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { LayoutDashboard, Loader2, MessageSquareText, Plane, ScrollText, Settings as Cog } from 'lucide-react'
 
-import { getSession, onSession } from './crm/api.js'
+import { getSession, onSession, signOut } from './crm/api.js'
 import Login from './crm/Login.jsx'
 
 const Dashboard = lazy(() => import('./crm/Dashboard.jsx'))
@@ -26,6 +26,16 @@ export default function Crm() {
   const [enquiry, setEnquiry] = useState(null)
 
   useEffect(() => onSession(setSession), [])
+  // A shared or unattended computer must not stay signed in: sign out after 30 minutes without activity.
+  useEffect(() => {
+    if (!session) return
+    let t
+    const reset = () => { clearTimeout(t); t = setTimeout(signOut, 30 * 60_000) }
+    const events = ['pointerdown', 'keydown', 'scroll']
+    events.forEach((e) => window.addEventListener(e, reset, { passive: true }))
+    reset()
+    return () => { clearTimeout(t); events.forEach((e) => window.removeEventListener(e, reset)) }
+  }, [session])
   useEffect(() => {
     // the back office must never show up in search results
     const m = document.createElement('meta')

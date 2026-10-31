@@ -117,6 +117,9 @@ export function Timeline({ events }) {
   )
 }
 
+/** mailto: address with anything that could add recipients or headers (? & = / space ...) percent-encoded, '@' kept. */
+export const mailTo = (email, subject) => `mailto:${String(email || '').replace(/[^A-Za-z0-9@._+-]/g, (c) => encodeURIComponent(c))}${subject ? `?subject=${encodeURIComponent(subject)}` : ''}`
+
 /** wa.me link for a phone number typed any way (10-digit Indian numbers get +91). */
 export const waTo = (phone, text) => {
   const d = String(phone || '').replace(/\D/g, '')

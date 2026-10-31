@@ -38,9 +38,10 @@ export async function db(path, { method = 'GET', body, prefer } = {}) {
   return { rows, count }
 }
 
+/** Calls a database function (supabase/schema.sql): one round trip for what used to be several queries. */
+export async function rpc(fn, args = {}) {
+  return (await db(`rpc/${fn}`, { method: 'POST', body: args })).rows
+}
+
 /** PostgREST filter values must not carry its own syntax characters. */
 export const clean = (s, max = 80) => String(s ?? '').replace(/[^\p{L}\p{N}@+._\- ]/gu, '').trim().slice(0, max)
-
-export async function addEvent(entity, entityId, kind, actor, data = {}) {
-  try { await db('crm_events', { method: 'POST', body: { entity, entity_id: entityId, kind, actor, data }, prefer: 'return=minimal' }) } catch { /* timeline only */ }
-}

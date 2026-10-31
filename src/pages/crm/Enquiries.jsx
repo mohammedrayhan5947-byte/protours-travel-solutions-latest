@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Download, Loader2, Mail, MessageCircle, Phone, RefreshCw, Search } from 'lucide-react'
 
 import { crm, download } from './api.js'
-import { Card, Drawer, ENQUIRY_STATUS, Empty, Err, Pager, Pill, Timeline, ago, btnDark, btnLight, input, waTo, whenFull } from './ui.jsx'
+import { Card, Drawer, ENQUIRY_STATUS, Empty, Err, Pager, Pill, Timeline, ago, btnDark, btnLight, input, mailTo, waTo, whenFull } from './ui.jsx'
 
 const STATUSES = Object.keys(ENQUIRY_STATUS)
 
@@ -85,7 +85,7 @@ function EnquiryDrawer({ id, onClose, onChanged }) {
             <div className="mt-3 flex flex-wrap gap-2">
               <a className={btnLight} href={waTo(q.phone, `Hi ${q.name}, thanks for your enquiry${q.topic ? ' about ' + q.topic : ''}. `)} target="_blank" rel="noreferrer"><MessageCircle size={16} /> WhatsApp</a>
               <a className={btnLight} href={`tel:${q.phone}`}><Phone size={16} /> Call</a>
-              {q.email && <a className={btnLight} href={`mailto:${q.email}`}><Mail size={16} /> E-mail</a>}
+              {q.email && <a className={btnLight} href={mailTo(q.email)}><Mail size={16} /> E-mail</a>}
             </div>
           </Card>
           <Card title={q.topic || 'Message'}><p className="text-[0.95rem] whitespace-pre-line text-ink">{q.message || 'No message.'}</p></Card>

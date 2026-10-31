@@ -1,4 +1,4 @@
-import { db, dbConfigured, addEvent } from './_lib/db.js'
+import { rpc, dbConfigured } from './_lib/db.js'
 
 /**
  * Public endpoint: saves a website enquiry for the CRM. The sender must tick the consent box on the form
@@ -30,17 +30,15 @@ export default async function handler(req, res) {
   const name = txt(b.name, 80) || 'Website visitor', phone = txt(b.phone, 20).replace(/[^\d+ ]/g, ''), email = txt(b.email, 120)
   const digits = phone.replace(/\D/g, '')
   if (digits.length < 8 || digits.length > 15) return res.status(400).json({ error: 'Please enter a valid phone number.' })
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return res.status(400).json({ error: 'Please check your email address.' })
+  // plain addresses only: no ? & = / % so the CRM's mailto: link can never be bent into adding recipients
+  if (email && !/^[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/.test(email)) return res.status(400).json({ error: 'Please check your email address.' })
   if (b.consent !== true) return res.status(400).json({ error: 'Please tick the box to let us save your enquiry.' })
 
   const row = { name, phone, email: email || null, topic: txt(b.topic, 80) || null, message: txt(b.message, 1500) || null, page: txt(b.page, 120) || null, consent: true }
   try {
-    // the same person double-clicking "send" should not create two enquiries
-    const since = new Date(Date.now() - 10 * 60_000).toISOString()
-    const dup = await db(`enquiries?phone=eq.${encodeURIComponent(phone)}&created_at=gte.${since}&select=id&limit=1`)
-    if (dup.rows?.length) return res.status(200).json({ ok: true })
-    const { rows } = await db('enquiries', { method: 'POST', body: row, prefer: 'return=representation' })
-    if (rows?.[0]?.id) await addEvent('enquiry', rows[0].id, 'created', 'customer', { page: row.page, topic: row.topic })
+    // one round trip: duplicate (double-click) check, flood cap, insert and timeline entry happen in the database
+    const id = await rpc('crm_add_enquiry', { p: row })
+    if (id === -1) return res.status(429).json({ error: 'We are very busy right now. Please call or WhatsApp us.' })
     return res.status(200).json({ ok: true })
   } catch (e) {
     console.error('[enquiry]', e.message)
