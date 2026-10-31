@@ -172,6 +172,20 @@ The Content-Security-Policy in `vercel.json` allows exactly the Google/Firebase 
 Limits and notes: customer sessions are kept in the browser (localStorage) so they stay signed in; sign-in guesses are throttled per IP and per
 e-mail; password resets and sign-ups are rate-limited; an account is deleted from Authentication, Users in the dashboard.
 
+## Going live (real tickets, real money)
+
+Test and live must switch together; the site refuses to take card payments when they disagree (`paymentModeProblem` in `api/_lib/flights.js`).
+
+1. **Relay first.** TBO's live host list is different (search/fare calls on `tboapi.travelboutiqueonline.com`, Book/Ticket/GetBookingDetails on
+   `booking.travelboutiqueonline.com`, login on `api.travelboutiqueonline.com/SharedAPI`). When `TBO_RELAY_URL` is set, the Lightsail relay decides which
+   TBO it calls (its `TBO_*_UPSTREAM` settings), so point those at the live hosts and restart the relay. The relay's IP is the one TBO whitelisted.
+2. **Vercel Production variables:** copy from `.env.vercel-live` (git-ignored): `TBO_ENV=live`, `TBO_CLIENT_ID=tboprod`, the live `TBO_USERNAME` / `TBO_PASSWORD`,
+   the live `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET`, `ALLOW_FAKE_PAYMENTS=false`. Keep the existing relay and Supabase variables. Redeploy.
+3. **Keep local on test:** `.env` / `.env.local` stay on `TBO_ENV=staging` with no Razorpay key, so local testing never spends money.
+4. **First live booking:** make one real, cheap booking with your own card, check the e-ticket, the CRM row (env = live), and the Razorpay payment.
+   Live bookings spend the real TBO wallet and the airline e-mails the passenger's address.
+5. **Rotate** the Razorpay key secret and the TBO password if they were ever pasted into chat or e-mail.
+
 ## Motion & accessibility rules
 
 - Animate only `transform`, `opacity` and `clip-path`. No smooth-scroll libraries, no `touch-action`,

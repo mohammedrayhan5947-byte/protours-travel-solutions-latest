@@ -664,7 +664,21 @@ function bookingSummary(d) {
 
 /* ---------------- payment ---------------- */
 
+/**
+ * Real card money and real tickets must switch on together. Live Razorpay keys with TBO in test mode would charge
+ * customers for tickets that do not exist; test Razorpay keys with TBO live would issue real tickets (and spend the
+ * TBO wallet) for payments that are not real. Returns the problem as a sentence, or '' when the two agree.
+ */
+export function paymentModeProblem(keyId, isLive) {
+  const live = /^rzp_live_/.test(String(keyId || '')), test = /^rzp_test_/.test(String(keyId || ''))
+  if (live && !isLive) return 'Live card payments are on but flight booking is still in TBO test mode (TBO_ENV). Switch both to live together.'
+  if (test && isLive) return 'TBO is live but the card payment keys are test keys, so real tickets would be issued without real payment. Use the live Razorpay keys.'
+  return ''
+}
+
 async function razorpayOrder(amount, receipt, contact) {
+  const mismatch = paymentModeProblem(process.env.RAZORPAY_KEY_ID, IS_LIVE)
+  if (mismatch) { console.error('[payments]', mismatch); throw new TboError('Online booking is being switched on. Please try again shortly, or call us.', { status: 503 }) }
   const auth = Buffer.from(`${process.env.RAZORPAY_KEY_ID}:${process.env.RAZORPAY_KEY_SECRET}`).toString('base64')
   const r = await fetch('https://api.razorpay.com/v1/orders', {
     method: 'POST',

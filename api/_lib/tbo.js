@@ -189,7 +189,7 @@ export async function authenticate({ force = false } = {}) {
   const { TBO_USERNAME, TBO_PASSWORD } = process.env
   if (!TBO_USERNAME || !TBO_PASSWORD) throw new TboError('Flight booking is not configured (TBO login missing).', { status: 503 })
   const json = await post(URLS.auth, 'Authenticate', {
-    ClientId: 'ApiIntegrationNew',
+    ClientId: process.env.TBO_CLIENT_ID || (IS_LIVE ? 'tboprod' : 'ApiIntegrationNew'), // TBO: 'tboprod' for production, 'ApiIntegrationNew' for the test system
     UserName: TBO_USERNAME,
     Password: TBO_PASSWORD,
     EndUserIp: END_USER_IP,
