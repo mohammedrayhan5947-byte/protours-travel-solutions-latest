@@ -19,20 +19,30 @@ import path from 'node:path'
 const ENV = (process.env.TBO_ENV || 'staging').toLowerCase()
 export const IS_LIVE = ENV === 'live'
 
+// Static-IP relay. TBO only accepts live calls from a whitelisted IP and Vercel's IPs change,
+// so when TBO_RELAY_URL is set (e.g. https://api.protoursandtravelsolutions.com/tbo) every
+// TBO call goes through the gateway on the static IP. The gateway decides staging vs live
+// (its TBO_*_UPSTREAM settings); TBO_ENV here still drives the site's own live/staging rules.
+const RELAY = (process.env.TBO_RELAY_URL || '').replace(/\/+$/, '')
+const RELAY_TOKEN = process.env.TBO_RELAY_TOKEN || ''
+if (RELAY && !RELAY_TOKEN) console.error('[tbo] TBO_RELAY_URL is set but TBO_RELAY_TOKEN is not: the gateway will refuse every call')
+
 // TBO's docs publish staging hosts only; live hosts arrive with the live
 // credentials after certification, so they must come from env (TBO_LIVE_*).
-const URLS = IS_LIVE
-  ? {
-      auth: process.env.TBO_LIVE_AUTH_URL,
-      air: process.env.TBO_LIVE_AIR_URL,
-      booking: process.env.TBO_LIVE_BOOK_URL || process.env.TBO_LIVE_AIR_URL,
-    }
-  : {
-      auth: 'https://Sharedapi.tektravels.com/SharedData.svc/rest',
-      air: 'https://api.tektravels.com/BookingEngineService_Air/AirService.svc/rest',
-      booking: process.env.TBO_STAGING_BOOK_URL || 'https://api.tektravels.com/BookingEngineService_Air/AirService.svc/rest',
-    }
-if (IS_LIVE && (!URLS.auth || !URLS.air)) console.error('[tbo] TBO_ENV=live but TBO_LIVE_AUTH_URL / TBO_LIVE_AIR_URL are not set')
+const URLS = RELAY
+  ? { auth: `${RELAY}/shared`, air: `${RELAY}/air`, booking: `${RELAY}/airbook` }
+  : IS_LIVE
+    ? {
+        auth: process.env.TBO_LIVE_AUTH_URL,
+        air: process.env.TBO_LIVE_AIR_URL,
+        booking: process.env.TBO_LIVE_BOOK_URL || process.env.TBO_LIVE_AIR_URL,
+      }
+    : {
+        auth: 'https://Sharedapi.tektravels.com/SharedData.svc/rest',
+        air: 'https://api.tektravels.com/BookingEngineService_Air/AirService.svc/rest',
+        booking: process.env.TBO_STAGING_BOOK_URL || 'https://api.tektravels.com/BookingEngineService_Air/AirService.svc/rest',
+      }
+if (IS_LIVE && !RELAY && (!URLS.auth || !URLS.air)) console.error('[tbo] TBO_ENV=live but TBO_LIVE_AUTH_URL / TBO_LIVE_AIR_URL are not set')
 
 // Booking-side methods go to the booking host on live; search-side to the air host.
 const BOOKING_METHODS = new Set(['Book', 'Ticket', 'GetBookingDetails', 'SendChangeRequest', 'GetChangeRequestStatus', 'GetCancellationCharges', 'ReleasePNRRequest'])
@@ -104,7 +114,14 @@ async function post(url, method, body, traceId, timeoutMs = 60000) {
   try {
     res = await fetch(`${url}/${method}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'Accept-Encoding': 'gzip, deflate' },
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'Accept-Encoding': 'gzip, deflate',
+        // the gateway's own token (TBO ignores it). The gateway answers its own errors as plain text,
+        // which fails JSON.parse below, so a relay problem can never look like a TBO success.
+        ...(RELAY && RELAY_TOKEN && url.startsWith(RELAY) ? { Authorization: `Bearer ${RELAY_TOKEN}` } : {}),
+      },
       body: JSON.stringify(body),
       signal: ctrl.signal,
     })
