@@ -33,6 +33,10 @@ export default function FloatingActions() {
     return () => window.removeEventListener('scroll', onScroll)
   }, [])
 
+  // Booking page: a focused checkout. The floating contact controls would sit on top of the Book/Pay buttons;
+  // the page carries its own "Need help?" line instead.
+  if (pathname === '/book-flights') return null
+
   const context = CONTEXT[pathname]
   const wa = waLink(context ? `Hello ${BIZ.name}, ${context}.` : undefined)
 

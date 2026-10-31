@@ -403,3 +403,10 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* Printing the e-ticket on the booking confirmation page: show only the ticket. */
+@media print {
+  body * { visibility: hidden !important; }
+  .eticket, .eticket * { visibility: visible !important; }
+  .eticket { position: absolute; left: 0; top: 0; width: 100%; }
+}
