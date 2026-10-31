@@ -22,6 +22,14 @@ const SORTS = [
 const STOP_OPTIONS = [{ id: 0, label: 'Non-stop' }, { id: 1, label: '1 stop' }, { id: 2, label: '2+ stops' }]
 const EMPTY = { stops: [], airlines: [], times: [], maxPrice: null, refundable: false }
 
+/* TBO returns every fare for a flight as its own result. Fold them into one card per flight: cheapest first, the rest behind "more fares". */
+const flightKey = (r) => r.journeys.map((j) => `${j.flights.map((g) => g.code + g.number).join('+')}@${j.dep}`).join('|')
+function groupFares(rows) {
+  const m = new Map()
+  for (const r of rows) { const k = flightKey(r); if (!m.has(k)) m.set(k, []); m.get(k).push(r) }
+  return [...m.values()].map((g) => g.slice().sort((a, b) => (a.price ?? 1e12) - (b.price ?? 1e12)))
+}
+
 const toggle = (arr, v) => (arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v])
 const stopBucket = (r) => Math.min(2, maxStops(r))
 
@@ -136,8 +144,36 @@ function Details({ r }) {
   )
 }
 
-function FlightCard({ r, selected, onSelect, single, badges, pax, onBook, busy, twoCol }) {
+function FareOptions({ fares, pax, picked, single, busy, onBook, onSelect }) {
+  const names = new Set(fares.map((f) => f.fareType)).size === fares.length
+  return (
+    <div className="mt-3 grid gap-2 rounded-xl bg-sand/70 p-3" role="group" aria-label="Fare options">
+      {fares.map((f, i) => (
+        <div key={f.resultIndex} className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-white p-3 ${picked?.resultIndex === f.resultIndex ? 'border-brand-500' : 'border-slate-200'}`}>
+          <div className="min-w-0 text-[0.85rem]">
+            <p className="font-bold text-ink">{names && f.fareType ? f.fareType : `Fare option ${i + 1}`}{i === 0 && fares.length > 1 && <span className="ml-2 rounded-full bg-palm/10 px-2 py-0.5 text-[0.7rem] text-palm">Lowest</span>}</p>
+            <p className="flex flex-wrap gap-x-3 text-slate-600">
+              <span className={f.refundable ? 'font-semibold text-palm' : ''}>{f.refundable ? 'Refundable' : 'Non-refundable'}</span>
+              <span><Luggage size={12} className="mr-1 inline" />{f.baggage ? `${f.baggage} check-in` : 'Check-in baggage not included'}</span>
+              {f.cabinBaggage && <span>Cabin {f.cabinBaggage}</span>}
+              {f.seats != null && f.seats > 0 && f.seats < 6 && <span className="font-semibold text-red-700">{f.seats} seats left</span>}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <p className="text-right"><span className="block font-display text-[1.2rem] leading-none font-bold text-navy-950">{f.price == null ? 'View fare' : inr(f.price)}</span><span className="text-[0.7rem] text-slate-500">for {pax}, incl. taxes</span></p>
+            {single
+              ? <button type="button" className="btn btn-gold px-4 py-2" disabled={busy || f.price == null} onClick={() => onBook([f])}>Book</button>
+              : <button type="button" className={`btn px-4 py-2 ${picked?.resultIndex === f.resultIndex ? 'btn-brand' : 'btn-ghost'}`} aria-pressed={picked?.resultIndex === f.resultIndex} onClick={() => onSelect(f)}>{picked?.resultIndex === f.resultIndex ? 'Selected' : 'Select'}</button>}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function FlightCard({ r, fares, picked, selected, onSelect, single, badges, pax, onBook, busy, twoCol }) {
   const [open, setOpen] = useState(false)
+  const [showFares, setShowFares] = useState(false)
   const priceText = r.price == null ? 'View fare' : inr(r.price)
   return (
     <li className={`rounded-2xl border bg-white p-4 shadow-sm transition ${selected ? 'border-brand-500 ring-2 ring-brand-500/25' : 'border-slate-200 hover:border-slate-400'}`}>
@@ -161,7 +197,7 @@ function FlightCard({ r, selected, onSelect, single, badges, pax, onBook, busy, 
           {single ? (
             <button type="button" className="btn btn-gold px-6 py-2.5" disabled={busy || r.price == null} onClick={() => onBook([r])}>{busy ? <Loader2 className="animate-spin" size={16} /> : 'Book now'}</button>
           ) : (
-            <button type="button" className={`btn px-5 py-2.5 ${selected ? 'btn-brand' : 'btn-ghost'}`} aria-pressed={selected} onClick={onSelect}>{selected ? <><Check size={16} /> Selected</> : 'Select'}</button>
+            <button type="button" className={`btn px-5 py-2.5 ${selected ? 'btn-brand' : 'btn-ghost'}`} aria-pressed={selected} onClick={() => onSelect()}>{selected ? <><Check size={16} /> Selected</> : 'Select'}</button>
           )}
         </div>
       </div>
@@ -172,8 +208,12 @@ function FlightCard({ r, selected, onSelect, single, badges, pax, onBook, busy, 
           {r.baggage && <span className="inline-flex items-center gap-1"><Luggage size={13} /> {r.baggage} check-in</span>}
           <span>{r.isLCC ? 'Low-cost carrier' : 'Full-service'}</span>
         </p>
-        <button type="button" className="inline-flex items-center gap-1 font-bold text-brand-500" aria-expanded={open} onClick={() => setOpen((o) => !o)}>Flight details {open ? <ChevronUp size={15} /> : <ChevronDown size={15} />}</button>
+        <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          {fares.length > 1 && <button type="button" className="inline-flex items-center gap-1 font-bold text-brand-500" aria-expanded={showFares} onClick={() => setShowFares((o) => !o)}>{fares.length} fares {showFares ? <ChevronUp size={15} /> : <ChevronDown size={15} />}</button>}
+          <button type="button" className="inline-flex items-center gap-1 font-bold text-brand-500" aria-expanded={open} onClick={() => setOpen((o) => !o)}>Flight details {open ? <ChevronUp size={15} /> : <ChevronDown size={15} />}</button>
+        </span>
       </div>
+      {showFares && <FareOptions fares={fares} pax={pax} picked={picked} single={single} busy={busy} onBook={onBook} onSelect={onSelect} />}
       {open && <Details r={r} />}
     </li>
   )
@@ -213,7 +253,7 @@ export default function Results({ found, form, picked, setPicked, busy, searchin
 
   const active = filters.stops.length + filters.airlines.length + filters.times.length + (filters.maxPrice != null ? 1 : 0) + (filters.refundable ? 1 : 0)
   const sorter = SORTS.find((s) => s.id === sort).fn
-  const shown = useMemo(() => lists.map((l) => l.filter((r) => matches(r, filters)).sort(sorter)), [lists, filters, sorter])
+  const shown = useMemo(() => lists.map((l) => groupFares(l.filter((r) => matches(r, filters)).sort(sorter))), [lists, filters, sorter])
   const ready = picked.every(Boolean)
   const total = picked.reduce((t, p) => t + (p?.price || 0), 0)
   const cheapestIds = useMemo(() => lists.map((l) => { const p = l.filter((r) => r.price != null); return p.length ? p.reduce((a, b) => (b.price < a.price ? b : a)).resultIndex : null }), [lists])
@@ -266,7 +306,7 @@ export default function Results({ found, form, picked, setPicked, busy, searchin
               <section key={li} className="min-w-0" aria-label={heading(li) || 'Flights'}>
                 <div className="mb-2 flex items-baseline justify-between gap-2">
                   <h2 className="font-display text-[1.15rem] font-bold text-ink">{heading(li) || 'Available flights'}{dateOf(li) && <span className="ml-2 text-[0.85rem] font-semibold text-slate-500">{dateLabel(dateOf(li))}</span>}</h2>
-                  <p className="text-[0.82rem] text-slate-600">{shown[li].length} of {list.length} flights</p>
+                  <p className="text-[0.82rem] text-slate-600">{shown[li].length} of {new Set(list.map(flightKey)).size} flights</p>
                 </div>
                 {!shown[li].length ? (
                   <div className="rounded-2xl bg-white p-8 text-center shadow-sm">
@@ -276,12 +316,16 @@ export default function Results({ found, form, picked, setPicked, busy, searchin
                   </div>
                 ) : (
                   <ul className="grid gap-3">
-                    {shown[li].slice(0, limit).map((r) => (
-                      <FlightCard key={r.resultIndex} r={r} pax={pax} single={single} busy={busy} twoCol={lists.length === 2}
-                        selected={picked[li]?.resultIndex === r.resultIndex} onBook={onBook}
-                        onSelect={() => setPicked((p) => p.map((x, j) => (j === li ? r : x)))}
-                        badges={[...(r.resultIndex === cheapestIds[li] ? ['Cheapest'] : []), ...(r.resultIndex === fastestIds[li] ? ['Fastest'] : [])]} />
-                    ))}
+                    {shown[li].slice(0, limit).map((fares) => {
+                      const chosen = fares.find((f) => picked[li]?.resultIndex === f.resultIndex)
+                      const r = chosen || fares[0]
+                      return (
+                        <FlightCard key={fares[0].resultIndex} r={r} fares={fares} picked={chosen} pax={pax} single={single} busy={busy} twoCol={lists.length === 2}
+                          selected={!!chosen} onBook={onBook}
+                          onSelect={(f) => setPicked((p) => p.map((x, j) => (j === li ? (f && f.resultIndex ? f : r) : x)))}
+                          badges={[...(fares.some((f) => f.resultIndex === cheapestIds[li]) ? ['Cheapest'] : []), ...(fares.some((f) => f.resultIndex === fastestIds[li]) ? ['Fastest'] : [])]} />
+                      )
+                    })}
                   </ul>
                 )}
                 {shown[li].length > limit && <button type="button" className="btn btn-ghost mt-3 w-full" onClick={() => setLimit((l) => l + 30)}>Show more flights ({shown[li].length - limit} more)</button>}
