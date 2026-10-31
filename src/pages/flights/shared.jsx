@@ -39,7 +39,7 @@ export async function api(action, payload, { signal } = {}) {
   const token = action === 'checkout' ? await accountToken() : null // signed-in customers: link the booking to My trips
   const r = await fetch('/api/flights', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ action, ...payload }), signal })
   const data = await r.json().catch(() => ({}))
-  if (!r.ok) throw new Error(data.error || 'Something went wrong. Please try again.')
+  if (!r.ok) throw Object.assign(new Error(data.error || 'Something went wrong. Please try again.'), { status: r.status })
   return data
 }
 

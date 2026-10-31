@@ -97,6 +97,7 @@ export function Timeline({ events }) {
       case 'payment_failed': return `Payment not completed: ${d.message || ''}`
       case 'ticketed': return `Ticketed. PNR ${d.pnr || ''}`
       case 'failed': return `Ticketing problem${d.pnr ? ' (PNR ' + d.pnr + ')' : ''}: ${(d.errors || []).join('; ') || d.status || ''}`
+      case 'refund': return `Refunded ${inr(d.amount)} to the customer's card${d.reason ? ': ' + d.reason : ''}${d.status && d.status !== 'processed' ? ` (${d.status})` : ''}`
       case 'status': return `Status changed: ${d.from} → ${d.to}`
       case 'assigned': return d.to ? `Assigned to ${d.to}` : 'Unassigned'
       case 'note': return d.text

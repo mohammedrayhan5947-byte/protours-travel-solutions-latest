@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Download, Loader2, MessageCircle, Phone, RefreshCw, Search, Mail, Radar } from 'lucide-react'
+import { Download, Loader2, MessageCircle, Phone, RefreshCw, Search, Mail, Radar, Undo2 } from 'lucide-react'
 
 import { crm, download } from './api.js'
 import { BOOKING_STATUS, Card, Drawer, Empty, Err, Pager, Pill, Timeline, btnDark, btnLight, dayLabel, inr, input, mailTo, waTo, when, whenFull } from './ui.jsx'
@@ -62,6 +62,40 @@ export default function Bookings({ openId, onOpen }) {
   )
 }
 
+/** Refund (all or part) of the card payment. Asks twice, writes to the booking's timeline, and cannot exceed what is left to refund. */
+function RefundPanel({ b, onDone }) {
+  const paid = Number(b.paid_inr) || 0, refunded = Number(b.refunded_inr) || 0
+  const remaining = Math.round((paid - refunded) * 100) / 100
+  const [amount, setAmount] = useState(String(remaining))
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const [err, setErr] = useState('')
+  if (!b.payment_id || String(b.payment_id).startsWith('test_') || !(paid > 0)) return null
+  const go = async (e) => {
+    e.preventDefault(); setErr(''); setMsg('')
+    const rupees = Number(amount)
+    if (!window.confirm(`Refund ${inr(rupees)} of ${inr(paid)} to the customer's card for ${b.order_ref}?\n\nThis returns the money to the customer. It does NOT cancel the airline ticket: do that separately with TBO / the airline.`)) return
+    setBusy(true)
+    try { const r = await crm('refund', { id: b.id, amount: rupees, reason, confirm: true }, 'POST'); setMsg(`Refund ${r.refundId} ${r.status === 'processed' ? 'done' : 'started (' + r.status + ')'}: ${inr(r.amount)}.`); setReason(''); await onDone() } catch (x) { setErr(x.message) } finally { setBusy(false) }
+  }
+  return (
+    <Card title="Refund" right={<span className="text-[0.8rem] text-slate-500">Paid {inr(paid)} · refunded {inr(refunded)}</span>}>
+      {remaining <= 0 ? <p className="text-[0.9rem] text-slate-600">Refunded in full.</p> : (
+        <form onSubmit={go} className="grid gap-3">
+          <div className="grid gap-3 sm:grid-cols-[10rem_1fr]">
+            <label className="text-[0.8rem] font-bold text-slate-600 uppercase">Amount (₹)<input className={`${input} mt-1 normal-case`} type="number" min="1" max={remaining} step="0.01" required value={amount} onChange={(e) => setAmount(e.target.value)} /></label>
+            <label className="text-[0.8rem] font-bold text-slate-600 uppercase">Reason (kept on the timeline)<input className={`${input} mt-1 normal-case`} required minLength={4} maxLength={200} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ticketing failed; customer cancelled; fare changed..." /></label>
+          </div>
+          <p className="text-[0.8rem] text-slate-500">At most {inr(remaining)} can still be refunded. The money goes back to the card the customer paid with (usually 5 to 7 working days).</p>
+          <Err>{err}</Err>{msg && <p role="status" className="text-[0.9rem] font-semibold text-emerald-700">{msg}</p>}
+          <button className={btnDark} disabled={busy}>{busy ? <Loader2 size={16} className="animate-spin" /> : <><Undo2 size={16} /> Refund to customer</>}</button>
+        </form>
+      )}
+    </Card>
+  )
+}
+
 export function BookingDrawer({ id, onClose, onChanged }) {
   const [d, setD] = useState(null)
   const [err, setErr] = useState('')
@@ -120,7 +154,9 @@ export function BookingDrawer({ id, onClose, onChanged }) {
             ))}
           </Card>
 
-          <Card title="Payment"><dl className="grid grid-cols-[8rem_1fr] gap-y-1 text-[0.9rem]"><dt className="text-slate-500">Payment id</dt><dd className="font-mono break-all">{b.payment_id || '—'}</dd><dt className="text-slate-500">Razorpay order</dt><dd className="font-mono break-all">{b.razorpay_order_id || '—'}</dd><dt className="text-slate-500">TBO trace</dt><dd className="font-mono break-all">{b.trace_id || '—'}</dd></dl></Card>
+          <Card title="Payment"><dl className="grid grid-cols-[8rem_1fr] gap-y-1 text-[0.9rem]"><dt className="text-slate-500">Paid / refunded</dt><dd>{b.paid_inr != null ? inr(b.paid_inr) : '—'} / {inr(b.refunded_inr || 0)}</dd><dt className="text-slate-500">Payment id</dt><dd className="font-mono break-all">{b.payment_id || '—'}</dd><dt className="text-slate-500">Razorpay order</dt><dd className="font-mono break-all">{b.razorpay_order_id || '—'}</dd><dt className="text-slate-500">TBO trace</dt><dd className="font-mono break-all">{b.trace_id || '—'}</dd></dl></Card>
+
+          <RefundPanel b={b} onDone={async () => { await load(); onChanged?.() }} />
 
           <Card title="Update">
             <form onSubmit={save} className="grid gap-3">

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
-import { recordCheckout, recordPaid, recordPaymentFailed, recordOutcome } from './store.js'
+import { recordCheckout, recordPaymentFailed, recordOutcome, claimTicketing, bookingOutcome, bookingForOrder, markUnfulfilled, paymentNote } from './store.js'
+import { razorpayConfigured, createOrder, confirmPayment as rzpConfirm, checkoutSignatureOk, paymentModeProblem, PayError } from './pay.js'
 import { air, authenticate, seal, unseal, customerPrice, fakePaymentsAllowed, IS_LIVE, TboError } from './tbo.js'
 import { AIRPORTS } from './airports.js'
 
@@ -236,6 +237,7 @@ export async function quote({ session: token, resultIndexes, rbd }) {
   const priced = legs.map((l) => ({ ...l, price: customerPrice(l.fare.PublishedFare) }))
   const quoteToken = seal({
     session: { tokenId: s.tokenId, traceId: s.traceId },
+    sessionExp: s.exp, // TBO lets a search live 15 minutes: nothing may be paid for after this
     journey: s.journey,
     international,
     pax: s.pax,
@@ -328,18 +330,25 @@ export async function checkout({ quote: token, passengers, contact, gst, choices
   const amount = fareTotal + Math.ceil(ssrTotal)
   const orderRef = 'PT' + Date.now().toString(36).toUpperCase() + crypto.randomBytes(2).toString('hex').toUpperCase()
 
+  // TBO holds a search for 15 minutes. Paying takes a couple of minutes and ticketing up to one more, so do not even start a
+  // payment when too little is left: the customer would be charged for a ticket we can no longer buy.
+  const holdLeft = (q.sessionExp || Date.now() + 15 * 60_000) - Date.now()
+  if (holdLeft < 4 * 60_000) throw new TboError('This fare is about to time out. Please search again.', { status: 410 })
+  const ttl = Math.min(15 * 60_000, holdLeft)
+  const expiresAt = Date.now() + ttl
+
   let payment
-  if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
-    payment = { mode: 'razorpay', ...(await razorpayOrder(amount, orderRef, contact)) }
+  if (razorpayConfigured()) {
+    payment = { mode: 'razorpay', expiresAt, ...(await razorpayOrder(amount, orderRef, { route: q.legs.map((l) => l.route).filter(Boolean).join(' | '), traceId: q.session.traceId })) }
   } else if (fakePaymentsAllowed()) {
     payment = { mode: 'test', orderId: 'test_' + orderRef }
   } else {
     throw new TboError('Online payment is not switched on yet. Please call or WhatsApp us to book this fare.', { status: 503 })
   }
 
-  const checkoutToken = seal({ session: q.session, payloads, amount, orderId: payment.orderId, orderRef, contact: paxList.contact }, 15 * 60 * 1000)
+  const checkoutToken = seal({ session: q.session, payloads, amount, orderId: payment.orderId, orderRef, contact: paxList.contact }, ttl)
   await recordCheckout({
-    userId, orderRef, traceId: q.session.traceId, amount, orderId: payment.orderId, contact: paxList.contact, pax: paxList, journey: q.journey,
+    userId, orderRef, checkoutToken, traceId: q.session.traceId, amount, orderId: payment.orderId, contact: paxList.contact, pax: paxList, journey: q.journey,
     route: q.legs.map((l) => l.route).filter(Boolean).join(' | '),
     travelDate: q.legs.map((l) => l.depDate).filter(Boolean).sort()[0],
     returnDate: q.legs.length > 1 ? q.legs.at(-1).depDate : q.legs[0]?.lastDepDate !== q.legs[0]?.depDate ? q.legs[0]?.lastDepDate : null,
@@ -562,16 +571,109 @@ const paxTotal = (leg) => (leg.breakdown || []).reduce((t, b) => t + (b.Passenge
 
 /* ---------------- ticket ---------------- */
 
+/** Payments we are issuing tickets for right now in THIS server instance (a guard of last resort when the database is unreachable). */
+const INFLIGHT = new Map()
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const FINAL = ['ticketed', 'needs_attention', 'failed', 'refunded', 'cancelled']
+
 export async function ticket({ checkout: token, payment }) {
-  const c = unseal(token, 'checkout')
+  const c = unseal(token, 'checkout', { ignoreExpiry: true })
+  if (c.exp < Date.now()) return lateTicket(c, payment)
+  let paid
   try {
-    await confirmPayment(c, payment)
+    paid = await verifyPayment(c, payment)
   } catch (e) {
     await recordPaymentFailed(c.orderRef, e.message)
     throw e
   }
-  await recordPaid(c.orderRef, payment?.paymentId || c.orderId)
+  // One payment, one ticket: only the first of {this request, a retry, the Razorpay webhook} may issue it.
+  const claim = await claimTicketing(c.orderRef, paid.paymentId, c.amount)
+  if (!claim.claimed) return existingOutcome(c, claim)
+  if (claim.unguarded) {
+    if (INFLIGHT.has(c.orderRef)) return INFLIGHT.get(c.orderRef)
+    const run = issueTickets(c, paid.paymentId).finally(() => INFLIGHT.delete(c.orderRef))
+    INFLIGHT.set(c.orderRef, run)
+    return run
+  }
+  return issueTickets(c, paid.paymentId)
+}
 
+/** The customer's browser says it paid: check it, never trust it. Test-mode orders skip Razorpay (and are refused on live). */
+async function verifyPayment(c, p) {
+  if (String(c.orderId).startsWith('test_')) {
+    if (!fakePaymentsAllowed()) throw new TboError('Test payments are not allowed.', { status: 402 })
+    return { paymentId: c.orderId }
+  }
+  if (!p?.paymentId || p.orderId !== c.orderId || !checkoutSignatureOk(c.orderId, p.paymentId, p.signature)) throw new TboError('Payment could not be verified.', { status: 402 })
+  try {
+    return await rzpConfirm({ orderId: c.orderId, paymentId: p.paymentId, amountInr: c.amount })
+  } catch (e) {
+    if (e instanceof PayError) throw new TboError(e.message, { status: e.status })
+    throw e
+  }
+}
+
+/** The 15-minute window had already closed when the browser came back. If money really moved, a person must put it right. */
+async function lateTicket(c, payment) {
+  if (payment?.paymentId && !String(c.orderId).startsWith('test_')) {
+    try {
+      const paid = await rzpConfirm({ orderId: c.orderId, paymentId: payment.paymentId, amountInr: c.amount })
+      await markUnfulfilled(c.orderId, paid.paymentId, c.amount, 'paid after the fare hold expired')
+    } catch { /* not a real payment: nothing to put right */ }
+  }
+  throw new TboError(`The time to complete this booking ran out. If you were charged, our team has your reference ${c.orderRef} and will refund you in full or complete the booking. You do not need to pay again.`, { status: 410 })
+}
+
+/** Someone else (the webhook, or this customer's earlier request) is issuing, or has issued, this ticket: wait and return the same result. */
+async function existingOutcome(c, claim) {
+  if (claim.status === 'payment_used') throw new TboError('This payment has already been used for another booking.', { status: 409 })
+  const deadline = Date.now() + 110_000
+  for (;;) {
+    const o = await bookingOutcome(c.orderRef)
+    if (o && FINAL.includes(o.status) && Array.isArray(o.legs) && o.legs.length) {
+      return { orderRef: c.orderRef, amount: c.amount, results: o.legs.map((l) => ({ bookingId: l.bookingId, pnr: l.pnr, ticketStatus: l.ticketStatus, error: l.error, details: l.details })) }
+    }
+    if (Date.now() > deadline) break
+    await sleep(2500)
+  }
+  return { orderRef: c.orderRef, amount: c.amount, pending: true, results: [{ error: 'Your payment is received and your ticket is being issued. Please do not pay again; it will appear in your e-mail and in My trips shortly.' }] }
+}
+
+/**
+ * Razorpay says this order was paid (webhook). If the customer's browser has not finished the booking (it was closed, the
+ * connection dropped), finish it here so a paid customer never ends up without a ticket. Returns a short note for the log.
+ */
+export async function fulfilPaidOrder({ orderId, paymentId, graceMs = Number(process.env.WEBHOOK_GRACE_MS ?? 20000) }) {
+  let row = await bookingForOrder(orderId)
+  if (!row) return 'not one of our bookings'
+  if (row.status !== 'payment_pending') return `already ${row.status}`
+  // the customer's own browser normally finishes within seconds: give it the first go
+  if (graceMs) {
+    await sleep(graceMs)
+    row = await bookingForOrder(orderId)
+    if (!row || row.status !== 'payment_pending') return `finished by the customer's browser (${row?.status})`
+  }
+  const amount = Number(row.amount_inr)
+  let paid
+  try {
+    paid = await rzpConfirm({ orderId, paymentId, amountInr: amount })
+  } catch (e) {
+    await paymentNote(orderId, 'payment_failed', { message: e.message })
+    return `payment not valid: ${e.message}`
+  }
+  let c
+  try { c = row.checkout_token ? unseal(row.checkout_token, 'checkout', { ignoreExpiry: true }) : null } catch { c = null }
+  if (!c || c.orderId !== orderId || c.exp < Date.now()) {
+    await markUnfulfilled(orderId, paid.paymentId, amount, c ? 'paid after the fare hold expired' : 'no booking data was stored')
+    return 'paid but could not be ticketed (needs a person)'
+  }
+  const claim = await claimTicketing(c.orderRef, paid.paymentId, c.amount)
+  if (!claim.claimed) return `not claimed (${claim.status})`
+  await issueTickets(c, paid.paymentId)
+  return 'ticket issued by webhook'
+}
+
+async function issueTickets(c, paymentId) {
   const results = []
   for (const leg of c.payloads) {
     const passengers = leg.passengers
@@ -635,7 +737,7 @@ export async function ticket({ checkout: token, payment }) {
     results.push({ bookingId, pnr, ticketStatus: status, error, details })
   }
   const out = { orderRef: c.orderRef, amount: c.amount, results }
-  await recordOutcome({ ...out, paymentId: payment?.paymentId || c.orderId })
+  await recordOutcome({ ...out, paymentId })
   return out
 }
 
@@ -664,49 +766,16 @@ function bookingSummary(d) {
 
 /* ---------------- payment ---------------- */
 
-/**
- * Real card money and real tickets must switch on together. Live Razorpay keys with TBO in test mode would charge
- * customers for tickets that do not exist; test Razorpay keys with TBO live would issue real tickets (and spend the
- * TBO wallet) for payments that are not real. Returns the problem as a sentence, or '' when the two agree.
- */
-export function paymentModeProblem(keyId, isLive) {
-  const live = /^rzp_live_/.test(String(keyId || '')), test = /^rzp_test_/.test(String(keyId || ''))
-  if (live && !isLive) return 'Live card payments are on but flight booking is still in TBO test mode (TBO_ENV). Switch both to live together.'
-  if (test && isLive) return 'TBO is live but the card payment keys are test keys, so real tickets would be issued without real payment. Use the live Razorpay keys.'
-  return ''
-}
-
-async function razorpayOrder(amount, receipt, contact) {
+/** A Razorpay order for exactly what the server worked out (never a number from the browser). */
+async function razorpayOrder(amount, orderRef, notes) {
   const mismatch = paymentModeProblem(process.env.RAZORPAY_KEY_ID, IS_LIVE)
   if (mismatch) { console.error('[payments]', mismatch); throw new TboError('Online booking is being switched on. Please try again shortly, or call us.', { status: 503 }) }
-  const auth = Buffer.from(`${process.env.RAZORPAY_KEY_ID}:${process.env.RAZORPAY_KEY_SECRET}`).toString('base64')
-  const r = await fetch('https://api.razorpay.com/v1/orders', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Basic ${auth}` },
-    body: JSON.stringify({ amount: Math.round(amount * 100), currency: 'INR', receipt, notes: { purpose: 'flight', phone: contact?.phone || '' } }),
-  })
-  const data = await r.json()
-  if (!r.ok) throw new TboError(data?.error?.description || 'Could not start payment.', { status: 502 })
-  return { orderId: data.id, keyId: process.env.RAZORPAY_KEY_ID, amountPaise: data.amount }
-}
-
-async function confirmPayment(c, p) {
-  if (String(c.orderId).startsWith('test_')) {
-    if (!fakePaymentsAllowed()) throw new TboError('Test payments are not allowed.', { status: 402 })
-    return
-  }
-  const secret = process.env.RAZORPAY_KEY_SECRET
-  if (!secret || !p?.paymentId || !p?.signature || p.orderId !== c.orderId) throw new TboError('Payment could not be verified.', { status: 402 })
-  const expected = crypto.createHmac('sha256', secret).update(`${c.orderId}|${p.paymentId}`).digest('hex')
-  if (expected.length !== p.signature.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(p.signature))) {
-    throw new TboError('Payment signature mismatch.', { status: 402 })
-  }
-  // Payment must be captured for the full amount before we spend the TBO wallet.
-  const auth = Buffer.from(`${process.env.RAZORPAY_KEY_ID}:${secret}`).toString('base64')
-  const r = await fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(p.paymentId)}`, { headers: { Authorization: `Basic ${auth}` } })
-  const pay = await r.json()
-  if (!r.ok || pay.order_id !== c.orderId || pay.amount !== Math.round(c.amount * 100) || !['captured', 'authorized'].includes(pay.status)) {
-    throw new TboError('Payment is not complete for this booking.', { status: 402 })
+  try {
+    const o = await createOrder({ amountPaise: Math.round(amount * 100), receipt: orderRef, notes: { orderRef, ...notes } })
+    return { orderId: o.orderId, keyId: process.env.RAZORPAY_KEY_ID, amountPaise: o.amountPaise }
+  } catch (e) {
+    if (e instanceof PayError) { console.error('[payments] order failed:', e.message); throw new TboError('Could not start the payment. Please try again.', { status: 502 }) }
+    throw e
   }
 }
 

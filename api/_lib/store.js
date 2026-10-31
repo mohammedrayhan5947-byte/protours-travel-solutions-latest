@@ -1,4 +1,4 @@
-﻿import { rpc, dbConfigured } from './db.js'
+import { rpc, dbConfigured } from './db.js'
 import { IS_LIVE } from './tbo.js'
 
 /**
@@ -24,6 +24,7 @@ export const recordCheckout = (b) => safe(() => {
     p: {
       order_ref: b.orderRef,
       user_id: b.userId || null,
+      checkout_token: b.checkoutToken || null,
       env: IS_LIVE ? 'live' : 'staging',
       trace_id: b.traceId || null,
       amount_inr: b.amount,
@@ -66,3 +67,32 @@ export const recordOutcome = (b) => safe(async () => {
     },
   })
 })
+
+/* ---------------- payments: who may issue the ticket, webhook records, refunds ---------------- */
+
+/**
+ * Exactly one caller (the customer's browser or the Razorpay webhook) gets { claimed: true } for a paid booking.
+ * If the database cannot be reached the booking is NOT blocked (the customer has already paid): it proceeds unguarded,
+ * and the failure is logged loudly.
+ */
+export async function claimTicketing(orderRef, paymentId, amount) {
+  if (!dbConfigured()) return { claimed: true, unguarded: true }
+  try {
+    return await rpc('crm_claim_ticketing', { p_ref: orderRef, p_payment: paymentId, p_paid: amount })
+  } catch (e) {
+    if (/duplicate key|unique/i.test(e.message)) return { claimed: false, status: 'payment_used' } // this payment already paid for another booking
+    console.error('[payments] could not claim ticketing, proceeding unguarded:', orderRef, e.message)
+    return { claimed: true, unguarded: true }
+  }
+}
+
+export const bookingForOrder = (orderId) => safe(() => rpc('crm_for_order', { p_order: orderId }))
+export const bookingOutcome = (orderRef) => safe(() => rpc('crm_outcome', { p_ref: orderRef }))
+export const webhookSeen = async (eventId, event, paymentId, orderId) => {
+  try { return await rpc('crm_webhook_seen', { p_event_id: eventId, p_event: event, p_payment: paymentId || null, p_order: orderId || null }) } catch (e) { console.error('[payments] webhook dedupe failed:', e.message); return true }
+}
+export const webhookDone = (eventId, outcome) => safe(() => rpc('crm_webhook_done', { p_event_id: eventId, p_outcome: String(outcome || '') }))
+export const paymentNote = (orderId, kind, data) => safe(() => rpc('crm_payment_note', { p_order: orderId, p_kind: kind, p_data: data || {} }))
+export const markUnfulfilled = (orderId, paymentId, paid, reason) => safe(() => rpc('crm_mark_unfulfilled', { p_order: orderId, p_payment: paymentId, p_paid: paid, p_reason: reason }))
+export const bookingForRefund = (id) => rpc('crm_booking_for_refund', { p_id: id })
+export const recordRefund = (p) => rpc('crm_record_refund', { p })

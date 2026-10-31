@@ -239,13 +239,13 @@ export function seal(obj, ttlMs = 15 * 60 * 1000) {
   return Buffer.concat([iv, c.getAuthTag(), data]).toString('base64url')
 }
 
-export function unseal(token, what = 'session') {
+export function unseal(token, what = 'session', { ignoreExpiry = false } = {}) {
   try {
     const buf = Buffer.from(String(token), 'base64url')
     const d = crypto.createDecipheriv('aes-256-gcm', key(), buf.subarray(0, 12))
     d.setAuthTag(buf.subarray(12, 28))
     const obj = JSON.parse(Buffer.concat([d.update(buf.subarray(28)), d.final()]).toString('utf8'))
-    if (obj.exp < Date.now()) throw new Error('expired')
+    if (!ignoreExpiry && obj.exp < Date.now()) throw new Error('expired')
     return obj
   } catch (e) {
     throw new TboError(

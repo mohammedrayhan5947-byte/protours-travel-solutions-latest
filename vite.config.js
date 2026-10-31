@@ -47,8 +47,6 @@ function razorpayDevApi() {
   return {
     name: 'razorpay-dev-api',
     configureServer(server) {
-      mount(server, '/api/create-order', '/api/create-order.js')
-      mount(server, '/api/verify-payment', '/api/verify-payment.js')
       mount(server, '/api/flights', '/api/flights.js')
       mount(server, '/api/crm', '/api/crm.js')
       mount(server, '/api/account', '/api/account.js')

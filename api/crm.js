@@ -1,5 +1,7 @@
 import { db, rpc, dbConfigured, DbError, clean } from './_lib/db.js'
 import { requireStaff, signIn, refresh, AuthError } from './_lib/auth.js'
+import { PayError, refundPayment, razorpayConfigured } from './_lib/pay.js'
+import { bookingForRefund, recordRefund } from './_lib/store.js'
 
 /**
  * Back office (CRM) API: flight bookings, website enquiries, the TBO call logs and the TBO wallet.
@@ -21,7 +23,7 @@ const bad = (m, s = 400) => Object.assign(new Error(m), { status: s })
 const isLive = () => String(process.env.TBO_ENV).toLowerCase() === 'live'
 const tbo = () => import('./_lib/tbo.js')
 
-const BOOKING_LIST = 'id,created_at,updated_at,order_ref,env,status,amount_inr,customer_name,contact_phone,contact_email,route,journey,travel_date,return_date,pax_count,pnr,booking_ids,assigned_to'
+const BOOKING_LIST = 'id,created_at,updated_at,order_ref,env,status,amount_inr,paid_inr,refunded_inr,customer_name,contact_phone,contact_email,route,journey,travel_date,return_date,pax_count,pnr,booking_ids,assigned_to'
 
 /** One JSON line per sensitive action in the Vercel logs: who did what (never passwords or tokens). */
 const audit = (who, action, extra = {}) => console.log(JSON.stringify({ audit: action, by: who, ...extra }))
@@ -125,6 +127,46 @@ async function update(entity, statuses, body, staff) {
   return { ok: true }
 }
 
+/**
+ * Refund a booking's card payment (all of it, or part) through Razorpay. Staff only, a reason is mandatory, every refund is
+ * written to the booking's timeline and the audit log, and the amount can never exceed what was paid minus what was refunded.
+ * A double click or a retry is harmless: the same request carries the same idempotency key, so Razorpay returns the same refund.
+ * NOTE: this returns the money to the customer's card; it does NOT cancel the airline ticket (do that with TBO / the airline).
+ */
+async function refund(_q, body, _req, staff) {
+  if (body.confirm !== true) throw bad('Confirm the refund first.')
+  if (!razorpayConfigured()) throw bad('Card payments are not connected on this server.', 503)
+  const id = Number(body.id)
+  if (!Number.isInteger(id) || id <= 0) throw bad('Bad booking id')
+  const reason = String(body.reason || '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 200)
+  if (reason.length < 4) throw bad('Please write the reason for the refund.')
+  const row = await bookingForRefund(id)
+  if (!row) throw bad('Booking not found', 404)
+  if (!row.payment_id || String(row.payment_id).startsWith('test_')) throw bad('This booking has no card payment to refund.')
+  const paid = Number(row.paid_inr), refunded = Number(row.refunded_inr) || 0
+  if (!(paid > 0)) throw bad('No payment amount is recorded for this booking.')
+  const remaining = Math.round((paid - refunded) * 100) / 100
+  if (remaining <= 0) throw bad('This booking has already been refunded in full.')
+  const amount = body.amount === undefined || body.amount === '' || body.amount === null ? remaining : Math.round(Number(body.amount) * 100) / 100
+  if (!Number.isFinite(amount) || amount < 1) throw bad('Enter a refund amount of at least ₹1.')
+  if (amount > remaining + 0.001) throw bad(`You can refund at most ₹${remaining} (paid ₹${paid}, already refunded ₹${refunded}).`)
+  const paise = Math.round(amount * 100)
+  let out
+  try {
+    out = await refundPayment({
+      paymentId: row.payment_id, amountPaise: paise, receipt: `RF-${row.order_ref}`, notes: { order_ref: row.order_ref, by: staff.email, reason },
+      idempotencyKey: `${row.order_ref}:${paise}:${Math.round(refunded * 100)}`,
+    })
+  } catch (e) {
+    audit(staff.email, 'refund_failed', { id, amount, why: e.message })
+    if (e instanceof PayError) throw bad(`Razorpay refused the refund: ${e.message}`, e.status >= 500 ? 502 : 400)
+    throw e
+  }
+  const rec = await recordRefund({ order_ref: row.order_ref, refund_id: out.id, amount_inr: paise / 100, actor: staff.email, reason, status: out.status })
+  audit(staff.email, 'refund', { id, order_ref: row.order_ref, amount, refundId: out.id, status: out.status })
+  return { ok: true, refundId: out.id, status: out.status, amount, refundedTotal: rec?.refunded ?? refunded + amount, full: Boolean(rec?.full) }
+}
+
 /** The Privacy Policy promises enquiries that did not become a booking are deleted within 12 months. */
 async function purge(_q, body, _req, staff) {
   if (body.confirm !== true) throw bad('Confirm the clean-up first.')
@@ -198,9 +240,10 @@ const WRITE = {
   bookingUpdate: (_q, b, _r, s) => update('booking', BOOKING_STATUS, b, s),
   enquiryUpdate: (_q, b, _r, s) => update('enquiry', ENQUIRY_STATUS, b, s),
   purge,
+  refund,
 }
 
-const SAFE_ERRORS = new Set(['DbError', 'AuthError', 'TboError'])
+const SAFE_ERRORS = new Set(['DbError', 'AuthError', 'TboError', 'PayError'])
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store')

@@ -17,9 +17,18 @@ const Done = lazy(() => import('./flights/Done.jsx'))
  * tokens the server hands back. The browser Back button walks the steps.
  */
 
+/**
+ * Opens Razorpay Checkout (their page takes the card: card details never touch our site or our server).
+ *  - The window closes itself before TBO's fare hold ends (`timeout`), so nobody can pay for a fare we can no longer ticket.
+ *  - A failed attempt does NOT end the booking: Checkout lets the customer retry, and only closing the window cancels.
+ *  - What we get back is only a claim ("I paid"); the server checks it with Razorpay before buying anything.
+ */
 function razorpay(c, contact) {
   return new Promise((resolve, reject) => {
+    let lastFailure = ''
     const open = () => {
+      const secondsLeft = Math.floor((Number(c.payment.expiresAt) - Date.now()) / 1000) - 45
+      if (secondsLeft < 120) return reject(new Error('This fare is about to time out. Please search again.'))
       const rz = new window.Razorpay({
         key: c.payment.keyId,
         order_id: c.payment.orderId,
@@ -28,11 +37,18 @@ function razorpay(c, contact) {
         name: BIZ.name,
         description: `Flight booking ${c.orderRef}`,
         prefill: { email: contact.email, contact: contact.phone },
+        notes: { booking: c.orderRef },
         theme: { color: '#0b2545' },
+        timeout: Math.min(secondsLeft, 900),
+        retry: { enabled: true, max_count: 3 },
         handler: (r) => resolve({ orderId: r.razorpay_order_id, paymentId: r.razorpay_payment_id, signature: r.razorpay_signature }),
-        modal: { ondismiss: () => reject(new Error('Payment was cancelled. Nothing has been booked.')) },
+        modal: {
+          confirm_close: true,
+          escape: false,
+          ondismiss: () => reject(new Error(lastFailure ? `${lastFailure} Nothing has been booked and you have not been charged.` : 'Payment was cancelled. Nothing has been booked.')),
+        },
       })
-      rz.on('payment.failed', (r) => reject(new Error(r.error?.description || 'Payment failed. Nothing has been booked.')))
+      rz.on('payment.failed', (r) => { lastFailure = r.error?.description ? `${r.error.description}.`.replace(/\.\.$/, '.') : 'The payment did not go through.' })
       rz.open()
     }
     if (window.Razorpay) return open()
@@ -42,6 +58,29 @@ function razorpay(c, contact) {
     s.onerror = () => reject(new Error('Could not load the payment window. Check your connection.'))
     document.body.appendChild(s)
   })
+}
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Asks the server to issue the ticket. Once the customer has paid, a dropped connection or a slow reply must never look like
+ * a failed payment: the request is safe to repeat (the server issues one ticket per payment), so retry it, and if it still
+ * cannot be confirmed say plainly that the money is safe and what to do.
+ */
+async function issueTicket(c, payment) {
+  let last
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await api('ticket', { checkout: c.checkout, payment })
+    } catch (e) {
+      last = e
+      // answers that are final (payment refused, fare expired, too many requests): stop. Network trouble and server errors: try again.
+      if (e.status && e.status < 500 && e.status !== 408) break
+      await wait(4000 * (attempt + 1))
+    }
+  }
+  const refused = last?.status && last.status < 500
+  throw new Error(refused ? last.message : `Your payment was received but we could not confirm your ticket just yet. Please do not pay again. Your reference is ${c.orderRef}: it will be e-mailed to you, and you can call or WhatsApp us on ${BIZ.phoneDisplay} and we will sort it out straight away.`)
 }
 
 export default function BookFlights() {
@@ -118,7 +157,7 @@ export default function BookFlights() {
       const c = await api('checkout', { quote: q.quote, ...details })
       const payment = c.payment.mode === 'razorpay' ? await razorpay(c, details.contact) : { orderId: c.payment.orderId }
       setBusy('ticket')
-      const t = await api('ticket', { checkout: c.checkout, payment })
+      const t = await issueTicket(c, payment)
       // the booking is finished: drop everything that could be paid for twice, so Back never returns to the payment page
       setQ(null); setFound(null); setPicked([])
       setDone({ ...t, contactEmail: details.contact.email })

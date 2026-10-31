@@ -12,6 +12,22 @@ const ACTIONS = { search, quote, checkout, ticket, calendar, fareRules }
 
 export const config = { maxDuration: 300 } // Book/Ticket can take up to 300 s (TBO guide)
 
+/* Starting payments and issuing tickets spend real resources: a speed bump per address (per server instance). */
+const hits = new Map()
+const LIMITS = { checkout: [12, 10 * 60_000], ticket: [20, 10 * 60_000] }
+function tooMany(action, req) {
+  const lim = LIMITS[action]
+  if (!lim) return false
+  const ip = String(req.headers?.['x-forwarded-for'] || '').split(',')[0].trim() || 'unknown'
+  const key = `${action}:${ip}`
+  const now = Date.now()
+  const recent = (hits.get(key) || []).filter((t) => now - t < lim[1])
+  if (recent.length >= lim[0]) return true
+  hits.set(key, [...recent, now])
+  if (hits.size > 3000) hits.clear()
+  return false
+}
+
 export default async function handler(req, res) {
   if (req.method === 'GET') {
     // Lets the page know whether online flight booking is switched on here.
@@ -27,8 +43,9 @@ export default async function handler(req, res) {
   // A booking made while signed in is linked to that customer. The id comes from the verified token, never from the request body.
   delete payload.userId
   if (action === 'checkout') payload.userId = (await optionalUser(req))?.sub || null
-  const fn = ACTIONS[action]
+  const fn = Object.hasOwn(ACTIONS, action) ? ACTIONS[action] : null
   if (!fn) return res.status(400).json({ error: 'Unknown action.' })
+  if (tooMany(action, req)) return res.status(429).json({ error: 'Too many attempts from this network. Please wait a few minutes.' })
 
   try {
     const data = await fn(payload)

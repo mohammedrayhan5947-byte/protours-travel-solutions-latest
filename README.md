@@ -172,6 +172,35 @@ The Content-Security-Policy in `vercel.json` allows exactly the Google/Firebase 
 Limits and notes: customer sessions are kept in the browser (localStorage) so they stay signed in; sign-in guesses are throttled per IP and per
 e-mail; password resets and sign-ups are rate-limited; an account is deleted from Authentication, Users in the dashboard.
 
+## Card payments (Razorpay): how the money is kept safe
+
+Flow: the server prices the booking and creates a Razorpay **order** for exactly that amount (`api/_lib/flights.js` checkout, `api/_lib/pay.js`) -> the
+customer pays on Razorpay's own Checkout (card details never touch this site or server) -> the server confirms the payment with Razorpay, and only then
+buys the ticket from TBO.
+
+What each protection does:
+
+- **Amount decided by the server**, from the sealed fare quote. The browser can send nothing that changes what is charged.
+- **A payment only counts after Razorpay's own API says so**: right order, right amount, INR, captured. A payment that is merely *authorized* is captured by us first
+  (works with either capture setting). The browser's signature is also checked (constant-time) but is never the only proof.
+- **One payment, one ticket.** The booking is claimed by exactly one caller in a single database statement (`crm_claim_ticketing`), so a double click, a retry, a reload,
+  or the webhook racing the browser can never buy two tickets, and one Razorpay payment id can never pay for two bookings (unique index).
+- **Webhook** (`api/razorpay-webhook.js`): if the customer pays and closes the browser, Razorpay tells us and the ticket is issued anyway. Signature over the raw body,
+  each delivery processed once, answered at once and worked on afterwards. It waits 20 s first so the customer's own browser normally finishes the booking.
+- **Fare hold**: TBO holds a search 15 minutes. Payment is refused when under 4 minutes remain, and the Checkout window closes itself before the hold ends.
+  If someone still pays late, the booking is flagged **needs attention** (never silently lost) so staff refund or complete it.
+- **Daily payment check** (`api/cron.js`): any booking still "awaiting payment" after 20 minutes is compared with Razorpay; money found with no ticket is flagged.
+- **Refunds** (CRM, booking panel): staff only, reason required, full or partial, can never exceed what was paid, idempotent (a double click refunds once), written to the
+  timeline and the audit log. A refund returns the money to the card; cancelling the airline ticket is a separate step with TBO.
+- **Live and test cannot be mixed**: live Razorpay keys are refused while TBO is in test mode and the reverse, because either mix charges real money for no ticket or
+  issues real tickets for no money. Fake (no-card) payments are impossible on live. Order/ticket requests are rate-limited per address.
+- Secrets (`RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`) exist only in server environment variables. The sealed checkout data kept for the webhook is encrypted, never shown in the CRM
+  or to customers, and cleared the moment ticketing finishes (and after a day regardless).
+
+Set up in the Razorpay dashboard: API Keys (live key id + secret), Settings -> Webhooks (URL, secret, events as listed in `.env.vercel-live`), and under Payments,
+leave capture on **automatic** (manual capture also works because the server captures, but automatic is simpler). Test the webhook with Razorpay's "Send test webhook"
+button, then one real small booking.
+
 ## Going live (real tickets, real money)
 
 Test and live must switch together; the site refuses to take card payments when they disagree (`paymentModeProblem` in `api/_lib/flights.js`).
@@ -180,7 +209,7 @@ Test and live must switch together; the site refuses to take card payments when 
    `booking.travelboutiqueonline.com`, login on `api.travelboutiqueonline.com/SharedAPI`). When `TBO_RELAY_URL` is set, the Lightsail relay decides which
    TBO it calls (its `TBO_*_UPSTREAM` settings), so point those at the live hosts and restart the relay. The relay's IP is the one TBO whitelisted.
 2. **Vercel Production variables:** copy from `.env.vercel-live` (git-ignored): `TBO_ENV=live`, `TBO_CLIENT_ID=tboprod`, the live `TBO_USERNAME` / `TBO_PASSWORD`,
-   the live `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET`, `ALLOW_FAKE_PAYMENTS=false`. Keep the existing relay and Supabase variables. Redeploy.
+   the live `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` / `RAZORPAY_WEBHOOK_SECRET`, `ALLOW_FAKE_PAYMENTS=false`. Keep the existing relay and Supabase variables. Redeploy.
 3. **Keep local on test:** `.env` / `.env.local` stay on `TBO_ENV=staging` with no Razorpay key, so local testing never spends money.
 4. **First live booking:** make one real, cheap booking with your own card, check the e-ticket, the CRM row (env = live), and the Razorpay payment.
    Live bookings spend the real TBO wallet and the airline e-mails the passenger's address.

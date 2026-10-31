@@ -52,6 +52,14 @@ create table if not exists flight_bookings (
 alter table flight_bookings add column if not exists user_id uuid;
 create index if not exists flight_bookings_user on flight_bookings (user_id, created_at desc) where user_id is not null;
 create index if not exists flight_bookings_email on flight_bookings (lower(contact_email));
+-- Payments. checkout_token is the sealed (AES-GCM) booking data the webhook needs to issue the ticket if the customer's browser
+-- closed after paying; it is cleared the moment ticketing finishes and never shown in the CRM or to customers.
+alter table flight_bookings add column if not exists checkout_token text;
+alter table flight_bookings add column if not exists paid_inr numeric(12,2);
+alter table flight_bookings add column if not exists refunded_inr numeric(12,2) not null default 0;
+-- one Razorpay payment can only ever pay for one booking
+create unique index if not exists flight_bookings_payment_unique on flight_bookings (payment_id) where payment_id is not null;
+create index if not exists flight_bookings_rzp_order on flight_bookings (razorpay_order_id) where razorpay_order_id is not null;
 create index if not exists flight_bookings_status on flight_bookings (status, created_at desc);
 create index if not exists flight_bookings_created on flight_bookings (created_at desc);
 create index if not exists flight_bookings_phone on flight_bookings (contact_phone);
@@ -101,6 +109,18 @@ create table if not exists site_content (
   updated_at  timestamptz not null default now()
 );
 
+-- Every Razorpay webhook delivery, once (their X-Razorpay-Event-Id): retries and replays are recognised and ignored.
+create table if not exists payment_events (
+  event_id    text primary key,
+  received_at timestamptz not null default now(),
+  event       text,
+  payment_id  text,
+  order_id    text,
+  outcome     text
+);
+create index if not exists payment_events_received on payment_events (received_at);
+
+alter table payment_events   enable row level security;
 alter table tbo_logs        enable row level security;
 alter table flight_bookings enable row level security;
 alter table enquiries       enable row level security;
@@ -121,13 +141,13 @@ create index if not exists flight_bookings_attention on flight_bookings (created
 create or replace function crm_record_checkout(p jsonb) returns bigint language plpgsql set search_path = public, pg_temp as $$
 declare v_id bigint; v_new boolean;
 begin
-  insert into flight_bookings (order_ref, env, trace_id, status, amount_inr, razorpay_order_id, customer_name, contact_phone, contact_email, journey, route, travel_date, return_date, pax_count, pax, user_id)
+  insert into flight_bookings (order_ref, env, trace_id, status, amount_inr, razorpay_order_id, customer_name, contact_phone, contact_email, journey, route, travel_date, return_date, pax_count, pax, user_id, checkout_token)
   values (p->>'order_ref', p->>'env', p->>'trace_id', 'payment_pending', (p->>'amount_inr')::numeric, p->>'razorpay_order_id', p->>'customer_name', p->>'contact_phone', p->>'contact_email',
-          p->>'journey', p->>'route', nullif(p->>'travel_date', '')::date, nullif(p->>'return_date', '')::date, nullif(p->>'pax_count', '')::int, coalesce(p->'pax', '[]'::jsonb), nullif(p->>'user_id', '')::uuid)
+          p->>'journey', p->>'route', nullif(p->>'travel_date', '')::date, nullif(p->>'return_date', '')::date, nullif(p->>'pax_count', '')::int, coalesce(p->'pax', '[]'::jsonb), nullif(p->>'user_id', '')::uuid, nullif(p->>'checkout_token', ''))
   on conflict (order_ref) do update set trace_id = excluded.trace_id, amount_inr = excluded.amount_inr, razorpay_order_id = excluded.razorpay_order_id,
     customer_name = excluded.customer_name, contact_phone = excluded.contact_phone, contact_email = excluded.contact_email, journey = excluded.journey,
     route = excluded.route, travel_date = excluded.travel_date, return_date = excluded.return_date, pax_count = excluded.pax_count, pax = excluded.pax,
-    user_id = coalesce(excluded.user_id, flight_bookings.user_id)
+    user_id = coalesce(excluded.user_id, flight_bookings.user_id), checkout_token = coalesce(excluded.checkout_token, flight_bookings.checkout_token)
   returning id, (xmax = 0) into v_id, v_new;
   if v_new then
     insert into crm_events (entity, entity_id, kind, actor, data) values ('booking', v_id, 'created', 'customer', jsonb_build_object('amount', p->'amount_inr', 'route', p->>'route'));
@@ -162,6 +182,7 @@ begin
     status = p->>'status',
     payment_id = coalesce(p->>'payment_id', f.payment_id),
     legs = coalesce(p->'legs', '[]'::jsonb),
+    checkout_token = null,
     pnr = nullif(p->>'pnr', ''),
     booking_ids = nullif(p->>'booking_ids', ''),
     pax = coalesce((select jsonb_agg(x || jsonb_build_object('ticket', coalesce(p->'tickets'->>upper(x->>'name'), x->>'ticket', ''))) from jsonb_array_elements(f.pax) x), f.pax)
@@ -222,12 +243,104 @@ $$;
 -- Booking panel: the row, its timeline and its TBO calls in one trip (null when not found).
 create or replace function crm_booking_detail(p_id bigint) returns jsonb language sql stable set search_path = public, pg_temp as $$
   select jsonb_build_object(
-    'booking', to_jsonb(b),
+    'booking', to_jsonb(b) - 'checkout_token',
     'events', coalesce((select jsonb_agg(to_jsonb(e) order by e.created_at, e.id) from crm_events e where e.entity = 'booking' and e.entity_id = b.id), '[]'::jsonb),
     'calls', case when b.trace_id is null then '[]'::jsonb else coalesce((select jsonb_agg(jsonb_build_object('id', l.id, 'created_at', l.created_at, 'method', l.method, 'kind', l.kind) order by l.created_at, l.id)
               from (select id, created_at, method, kind from tbo_logs where trace_id = b.trace_id order by created_at, id limit 300) l), '[]'::jsonb) end)
   from flight_bookings b where b.id = p_id
 $$;
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- Payments. Exactly one caller (the customer's browser OR the Razorpay webhook) may start ticketing a paid booking:
+-- the status flips payment_pending -> paid in ONE statement, and only the caller whose update changed a row gets 'claimed'.
+-- ---------------------------------------------------------------------------------------------------------------
+create or replace function crm_claim_ticketing(p_ref text, p_payment text, p_paid numeric) returns jsonb language plpgsql set search_path = public, pg_temp as $$
+declare v_id bigint; v_status text; v_pay text;
+begin
+  update flight_bookings set status = 'paid', payment_id = p_payment, paid_inr = p_paid
+   where order_ref = p_ref and status = 'payment_pending' and (payment_id is null or payment_id = p_payment)
+   returning id into v_id;
+  if v_id is not null then
+    insert into crm_events (entity, entity_id, kind, actor, data) values ('booking', v_id, 'paid', 'system', jsonb_build_object('paymentId', p_payment, 'amount', p_paid));
+    return jsonb_build_object('claimed', true, 'status', 'paid');
+  end if;
+  select status, payment_id into v_status, v_pay from flight_bookings where order_ref = p_ref;
+  if not found then return jsonb_build_object('claimed', false, 'status', null); end if;
+  return jsonb_build_object('claimed', false, 'status', v_status, 'paymentId', v_pay);
+end $$;
+
+-- The booking a Razorpay order belongs to, with the sealed checkout data (server only).
+create or replace function crm_for_order(p_order text) returns jsonb language sql stable set search_path = public, pg_temp as $$
+  select jsonb_build_object('order_ref', order_ref, 'status', status, 'amount_inr', amount_inr, 'payment_id', payment_id, 'checkout_token', checkout_token, 'env', env)
+  from flight_bookings where razorpay_order_id = p_order
+$$;
+
+-- What the customer's browser (or a retry) should be shown for a booking that is already being / has been ticketed.
+create or replace function crm_outcome(p_ref text) returns jsonb language sql stable set search_path = public, pg_temp as $$
+  select jsonb_build_object('status', status, 'amount_inr', amount_inr, 'legs', legs) from flight_bookings where order_ref = p_ref
+$$;
+
+-- A webhook delivery seen for the first time returns true; a retry / replay returns false.
+create or replace function crm_webhook_seen(p_event_id text, p_event text, p_payment text, p_order text) returns boolean language plpgsql set search_path = public, pg_temp as $$
+begin
+  insert into payment_events (event_id, event, payment_id, order_id) values (p_event_id, p_event, p_payment, p_order) on conflict (event_id) do nothing;
+  return found;
+end $$;
+
+create or replace function crm_webhook_done(p_event_id text, p_outcome text) returns void language sql set search_path = public, pg_temp as $$
+  update payment_events set outcome = left(p_outcome, 200) where event_id = p_event_id
+$$;
+
+-- A payment event worth showing on the booking's timeline (failed attempt, paid but could not be ticketed, refund).
+create or replace function crm_payment_note(p_order text, p_kind text, p_data jsonb) returns void language plpgsql set search_path = public, pg_temp as $$
+declare v_id bigint;
+begin
+  select id into v_id from flight_bookings where razorpay_order_id = p_order;
+  if v_id is not null then insert into crm_events (entity, entity_id, kind, actor, data) values ('booking', v_id, p_kind, 'razorpay', coalesce(p_data, '{}'::jsonb)); end if;
+end $$;
+
+-- Paid, but the sealed checkout data had expired (the customer paid after the 15-minute hold): needs a person, probably a refund.
+create or replace function crm_mark_unfulfilled(p_order text, p_payment text, p_paid numeric, p_reason text) returns void language plpgsql set search_path = public, pg_temp as $$
+declare v_id bigint;
+begin
+  update flight_bookings set status = 'needs_attention', payment_id = coalesce(payment_id, p_payment), paid_inr = coalesce(paid_inr, p_paid), checkout_token = null
+   where razorpay_order_id = p_order and status = 'payment_pending' returning id into v_id;
+  if v_id is not null then
+    insert into crm_events (entity, entity_id, kind, actor, data) values ('booking', v_id, 'failed', 'razorpay', jsonb_build_object('status', 'needs_attention', 'errors', jsonb_build_array(p_reason), 'paymentId', p_payment));
+  end if;
+end $$;
+
+-- Bookings still "awaiting payment" 20 minutes to 3 days after they started: the daily check asks Razorpay whether any were actually paid.
+create or replace function crm_stale_pending(p_limit int) returns jsonb language sql stable set search_path = public, pg_temp as $$
+  select coalesce(jsonb_agg(jsonb_build_object('order_ref', order_ref, 'razorpay_order_id', razorpay_order_id, 'amount_inr', amount_inr)), '[]'::jsonb)
+  from (select order_ref, razorpay_order_id, amount_inr from flight_bookings
+         where status = 'payment_pending' and razorpay_order_id is not null and razorpay_order_id not like 'test\_%'
+           and created_at < now() - interval '20 minutes' and created_at > now() - interval '3 days'
+         order by created_at limit least(greatest(p_limit, 1), 50)) x
+$$;
+
+-- What a refund needs to know (staff only, called from the CRM).
+create or replace function crm_booking_for_refund(p_id bigint) returns jsonb language sql stable set search_path = public, pg_temp as $$
+  select jsonb_build_object('id', id, 'order_ref', order_ref, 'status', status, 'payment_id', payment_id, 'paid_inr', paid_inr, 'refunded_inr', refunded_inr, 'env', env)
+  from flight_bookings where id = p_id
+$$;
+
+-- A refund Razorpay accepted (or later confirmed): once per refund id, adds to refunded_inr, marks 'refunded' when all of it is back.
+create or replace function crm_record_refund(p jsonb) returns jsonb language plpgsql set search_path = public, pg_temp as $$
+declare v_id bigint; v_paid numeric; v_refunded numeric; v_amount numeric := (p->>'amount_inr')::numeric;
+begin
+  select id, paid_inr into v_id, v_paid from flight_bookings
+   where (p->>'order_ref' is not null and order_ref = p->>'order_ref') or (p->>'order_ref' is null and payment_id = p->>'payment_id') for update;
+  if not found then return jsonb_build_object('found', false); end if;
+  if exists (select 1 from crm_events where entity = 'booking' and entity_id = v_id and kind = 'refund' and data->>'refundId' = p->>'refund_id') then
+    return jsonb_build_object('found', true, 'duplicate', true);
+  end if;
+  update flight_bookings set refunded_inr = refunded_inr + v_amount where id = v_id returning refunded_inr into v_refunded;
+  if v_paid is not null and v_refunded >= v_paid then update flight_bookings set status = 'refunded' where id = v_id; end if;
+  insert into crm_events (entity, entity_id, kind, actor, data)
+  values ('booking', v_id, 'refund', coalesce(p->>'actor', 'razorpay'), jsonb_build_object('refundId', p->>'refund_id', 'amount', v_amount, 'reason', p->>'reason', 'status', p->>'status'));
+  return jsonb_build_object('found', true, 'duplicate', false, 'refunded', v_refunded, 'full', v_paid is not null and v_refunded >= v_paid);
+end $$;
 
 -- ---------------------------------------------------------------------------------------------------------------
 -- Customer accounts ("My trips"). The API passes the user id from the VERIFIED login token, and the e-mail only
@@ -310,16 +423,22 @@ begin
       n_enq := array_length(ids, 1);
     end if;
   end if;
+  update flight_bookings set checkout_token = null where checkout_token is not null and created_at < now() - interval '1 day';
+  delete from payment_events where received_at < now() - interval '90 days';
   return jsonb_build_object('tboLogsDeleted', n_logs, 'enquiriesDeleted', n_enq);
 end $$;
 
 -- ---- lock everything to the server's secret key (service_role) only ----
-revoke all on table tbo_logs, flight_bookings, enquiries, crm_events, site_content from anon, authenticated;
+revoke all on table tbo_logs, flight_bookings, enquiries, crm_events, site_content, payment_events from anon, authenticated;
 revoke all on sequence tbo_logs_id_seq, flight_bookings_id_seq, enquiries_id_seq, crm_events_id_seq from anon, authenticated;
 revoke all on function crm_record_checkout(jsonb), crm_record_paid(text, text), crm_record_payment_failed(text, text), crm_record_outcome(jsonb), crm_add_enquiry(jsonb),
   crm_overview(), crm_booking_detail(bigint), crm_apply_update(text, bigint, text, text, boolean, text, text), crm_traces(int, int), crm_cleanup(int, int), set_updated_at(),
-  acct_bookings(uuid, text), acct_booking(uuid, text, text)
+  acct_bookings(uuid, text), acct_booking(uuid, text, text),
+  crm_claim_ticketing(text, text, numeric), crm_for_order(text), crm_outcome(text), crm_webhook_seen(text, text, text, text), crm_webhook_done(text, text),
+  crm_payment_note(text, text, jsonb), crm_mark_unfulfilled(text, text, numeric, text), crm_booking_for_refund(bigint), crm_record_refund(jsonb), crm_stale_pending(int)
   from public, anon, authenticated;
 grant execute on function crm_record_checkout(jsonb), crm_record_paid(text, text), crm_record_payment_failed(text, text), crm_record_outcome(jsonb), crm_add_enquiry(jsonb),
   crm_overview(), crm_booking_detail(bigint), crm_apply_update(text, bigint, text, text, boolean, text, text), crm_traces(int, int), crm_cleanup(int, int),
-  acct_bookings(uuid, text), acct_booking(uuid, text, text) to service_role;
+  acct_bookings(uuid, text), acct_booking(uuid, text, text),
+  crm_claim_ticketing(text, text, numeric), crm_for_order(text), crm_outcome(text), crm_webhook_seen(text, text, text, text), crm_webhook_done(text, text),
+  crm_payment_note(text, text, jsonb), crm_mark_unfulfilled(text, text, numeric, text), crm_booking_for_refund(bigint), crm_record_refund(jsonb), crm_stale_pending(int) to service_role;
