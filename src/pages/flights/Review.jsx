@@ -38,6 +38,44 @@ function useCountdown(expiresAt) {
 }
 const mmss = (ms) => `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`
 
+/* ---------------- steps + penalty timeline ---------------- */
+
+const STEPS = ['Trip summary', 'Traveller details', 'Meals & baggage', 'Contact & pay']
+
+function StepBar({ addOns }) {
+  const steps = addOns ? STEPS : STEPS.filter((x) => x !== 'Meals & baggage')
+  return (
+    <ol aria-label="Booking steps" className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.8rem] font-semibold text-slate-500">
+      {steps.map((x, i) => <li key={x} className="flex items-center gap-2"><span className="grid h-5 w-5 place-items-center rounded-full bg-navy-950 text-[0.7rem] text-white">{i + 1}</span>{x}{i < steps.length - 1 && <span aria-hidden className="text-slate-300">/</span>}</li>)}
+    </ol>
+  )
+}
+
+/* ISO-8601 duration ("P1DT2H", "PT3H") to hours; null when unreadable. */
+function hoursOf(d) {
+  const m = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?)?$/.exec(String(d || ''))
+  return m ? (Number(m[1] || 0) * 24 + Number(m[2] || 0) + Number(m[3] || 0) / 60) : null
+}
+const hoursLabel = (h) => (h >= 48 ? `${Math.round(h / 24)} days` : h >= 1 ? `${Math.round(h)} h` : `${Math.round(h * 60)} min`)
+
+/* Cancellation / date-change fee by how long before departure, drawn as a bar like the big sites do.
+   Uses the airline's own mini fare rules; shows nothing when they are missing or unreadable. */
+function PenaltyBar({ rules, type, title }) {
+  const segs = (rules || []).filter((m) => m.Type === type).map((m) => ({ from: hoursOf(m.FromDuration) ?? 0, to: m.ToDuration ? hoursOf(m.ToDuration) : null, fee: (m.PaxPenalties || [])[0]?.AirlineFee }))
+    .filter((x) => x.fee != null).sort((a, b) => b.from - a.from)
+  if (!segs.length) return null
+  const colour = (fee) => (fee === 0 ? 'bg-palm' : 'bg-gold-500')
+  return (
+    <div className="mt-3">
+      <p className="mb-1 text-[0.85rem] font-bold text-ink">{title}</p>
+      <div className="flex h-2.5 overflow-hidden rounded-full" aria-hidden>{segs.map((x, i) => <span key={i} className={`flex-1 ${i === segs.length - 1 && x.fee > 0 ? 'bg-red-500' : colour(x.fee)}`} />)}</div>
+      <ul className="mt-2 grid gap-1 text-[0.8rem] text-slate-700 sm:grid-cols-2">
+        {segs.map((x, i) => <li key={i} className="flex justify-between gap-3 rounded-lg bg-sand/60 px-3 py-1.5"><span>{x.to == null ? `More than ${hoursLabel(x.from)} before` : x.from ? `${hoursLabel(x.from)} to ${hoursLabel(x.to)} before` : `Up to ${hoursLabel(x.to)} before`} departure</span><span className="font-bold">{x.fee === 0 ? 'Free' : `${inr(x.fee)} + our fee`}</span></li>)}
+      </ul>
+    </div>
+  )
+}
+
 /* ---------------- itinerary + rules ---------------- */
 
 function Itinerary({ q }) {
@@ -76,6 +114,13 @@ function FareRules({ legs }) {
       <button type="button" className="flex w-full items-center justify-between gap-2 px-4 py-3 text-left font-bold text-ink" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         Cancellation, date change and fare rules {open ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
       </button>
+      {legs.some((l) => (l.rules || []).some((r) => r.mini?.Rules?.length)) && (
+        <div className="px-4 pb-3">
+          {legs.flatMap((l, li) => (l.rules || []).map((r, ri) => (
+            <div key={`${li}-${ri}`}><p className="text-[0.8rem] font-semibold text-slate-500">{r.origin} → {r.destination}</p><PenaltyBar rules={r.mini?.Rules} type={1} title="Cancellation fee" /><PenaltyBar rules={r.mini?.Rules} type={2} title="Date change fee" /></div>
+          )))}
+        </div>
+      )}
       {open && (
         <div className="max-h-80 overflow-auto border-t border-slate-200 bg-sand/60 p-4 text-[0.85rem]">
           {!rules.length && <p>The airline's fare rules were not returned for this fare. Our team will confirm them with you before ticketing.</p>}
@@ -177,6 +222,25 @@ function OptionCard({ on, onClick, title, sub }) {
 
 /* ---------------- fare summary ---------------- */
 
+function FareLines({ q }) {
+  const base = q.legs.reduce((t, l) => t + (l.paxFares || []).reduce((a, f) => a + (Number(f.base) || 0), 0), 0)
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-3 grid gap-2 text-[0.9rem]">
+      <p className="flex justify-between text-slate-700"><span>Base fare</span><span>{inr(base)}</span></p>
+      <p className="flex justify-between text-slate-700"><span>Taxes, fees &amp; service charge</span><span>{inr(q.total - base)}</span></p>
+      <button type="button" className="w-fit text-[0.8rem] font-bold text-brand-500" aria-expanded={open} onClick={() => setOpen((o) => !o)}>{open ? 'Hide' : 'Show'} per-flight breakdown</button>
+      {open && q.legs.map((leg, li) => (
+        <div key={li} className="rounded-lg bg-sand/60 p-2 text-slate-600">
+          <p className="font-semibold text-ink">{leg.journeys[0].from} → {leg.journeys.at(-1).to} · {dateLabel(leg.journeys[0].dep)}</p>
+          {(leg.paxFares || []).map((f, k) => <p key={k} className="flex justify-between"><span>{TYPE_NAME[f.type] || 'Traveller'} × {f.count}</span><span>{inr(f.base)}</span></p>)}
+          <p className="flex justify-between font-bold text-ink"><span>Flight fare</span><span>{inr(leg.price)}</span></p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function FareSummary({ q, extras, left, expired, agree, setAgree, busy, form }) {
   const total = q.total + extras
   return (
@@ -185,19 +249,7 @@ function FareSummary({ q, extras, left, expired, agree, setAgree, busy, form }) 
       <p className={`mt-2 flex items-center gap-2 rounded-lg px-3 py-2 text-[0.85rem] font-semibold ${expired ? 'bg-red-50 text-red-700' : left < 180000 ? 'bg-gold-500/15 text-gold-600' : 'bg-palm/10 text-palm'}`}>
         <Clock size={15} /> {expired ? 'This fare has timed out. Please search again.' : <>Fare held for <span className="font-mono">{mmss(left)}</span></>}
       </p>
-      <div className="mt-3 grid gap-3">
-        {q.legs.map((leg, li) => {
-          const base = (leg.paxFares || []).reduce((t, f) => t + (Number(f.base) || 0), 0)
-          return (
-            <div key={li} className="border-b border-slate-100 pb-3 text-[0.9rem]">
-              <p className="font-semibold text-ink">{leg.journeys[0].from} → {leg.journeys.at(-1).to} · {dateLabel(leg.journeys[0].dep)}</p>
-              {(leg.paxFares || []).map((f, k) => <p key={k} className="flex justify-between text-slate-600"><span>{TYPE_NAME[f.type] || 'Traveller'} × {f.count}</span><span>{inr(f.base)}</span></p>)}
-              <p className="flex justify-between text-slate-600"><span>Taxes, fees &amp; service charge</span><span>{inr(leg.price - base)}</span></p>
-              <p className="mt-1 flex justify-between font-bold text-ink"><span>Flight fare</span><span>{inr(leg.price)}</span></p>
-            </div>
-          )
-        })}
-      </div>
+      <FareLines q={q} />
       {extras > 0 && <p className="mt-3 flex justify-between text-[0.92rem]"><span>Meals &amp; baggage</span><span className="font-semibold">{inr(extras)}</span></p>}
       <p className="mt-3 flex items-baseline justify-between border-t border-slate-200 pt-3"><span className="font-bold text-ink">Total amount</span><span className="font-display text-[1.6rem] font-bold text-navy-950">{inr(total)}</span></p>
       <label className="mt-4 flex items-start gap-2 text-[0.85rem]"><input type="checkbox" className="mt-1 h-4 w-4" required checked={agree} onChange={(e) => setAgree(e.target.checked)} /><span>Names match the {q.international ? 'passport' : 'government ID'}, and I accept the fare rules, <Link className="underline" to="/terms">Terms</Link> and <Link className="underline" to="/refund-policy">Refund Policy</Link>.</span></label>
@@ -254,6 +306,7 @@ export default function Review({ q, searchedAt, onBack, onPay, busy }) {
   return (
     <form id="review-form" onSubmit={submit} className="grid gap-5 pb-24 lg:grid-cols-[1fr_22rem] lg:pb-0">
       <div className="grid content-start gap-5">
+        <StepBar addOns={addOnsAvailable} />
         <button type="button" className="inline-flex w-fit items-center gap-1.5 font-bold text-brand-500" onClick={onBack}><ArrowLeft size={17} /> Back to flights</button>
 
         {detailChange.length > 0 && <p role="status" className="flex gap-2 rounded-xl bg-gold-500/15 p-3 font-semibold text-navy-900"><AlertTriangle size={18} className="shrink-0" />The airline updated this flight ({detailChange.join(', ')}). Please check the details below before paying.</p>}
