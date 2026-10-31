@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Check, Loader2 } from 'lucide-react'
 
 import { accountToken } from '../account/session.js'
+import { LOGOS } from './airlines.js'
 
 import { AIRPORTS } from '../../../api/_lib/airports.js'
 
@@ -48,8 +49,18 @@ export const ui = {
   card: 'rounded-2xl border border-slate-200 bg-white shadow-sm',
 }
 
-/** A round badge with the airline code (we have no logo licence, so no logos). */
-export function AirlineMark({ code, size = 40 }) {
+/** The airline's logo (public/airlines/<code>.webp, kept on our own site) on a white tile, or, when we do not have
+    that airline's logo, a coloured badge with its two-letter code. `name` is read out by screen readers. */
+export function AirlineMark({ code, name, size = 40 }) {
+  const [broken, setBroken] = useState(false)
+  const c = String(code || '').toUpperCase()
+  if (LOGOS.has(c) && !broken) {
+    return (
+      <span className="grid shrink-0 place-items-center rounded-lg border border-slate-200 bg-white px-1.5" style={{ height: size, width: Math.round(size * 2.1) }}>
+        <img src={`/airlines/${c}.webp`} alt={name || c} loading="lazy" decoding="async" onError={() => setBroken(true)} className="max-h-[78%] max-w-full object-contain" />
+      </span>
+    )
+  }
   const hue = [...String(code || 'X')].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7)
   return (
     <span aria-hidden className="grid shrink-0 place-items-center rounded-full font-display font-bold text-white" style={{ width: size, height: size, background: `hsl(${hue} 55% 38%)`, fontSize: size * 0.34 }}>

@@ -1,0 +1,2 @@
+/* Airlines we have a logo for (public/airlines/<IATA code>.webp). Anything else keeps the coloured code badge. */
+export const LOGOS = new Set(["2T", "3L", "6E", "8M", "AA", "AC", "AF", "AI", "AK", "AY", "AZ", "BA", "BG", "CA", "CX", "CZ", "DL", "DV", "EI", "EK", "ET", "EY", "F3", "FZ", "G8", "G9", "GA", "GF", "HU", "I5", "IX", "J9", "JL", "KE", "KL", "KQ", "KU", "LH", "LX", "ME", "MH", "MS", "MU", "NH", "OD", "OS", "OZ", "PK", "QF", "QP", "QR", "RJ", "SG", "SK", "SQ", "SV", "TG", "TK", "TP", "UA", "UK", "UL", "VJ", "VS", "WB", "WY", "XY"])

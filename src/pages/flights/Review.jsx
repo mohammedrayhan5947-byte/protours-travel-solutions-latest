@@ -60,7 +60,7 @@ function Itinerary({ q }) {
       {q.legs.map((leg, li) => leg.journeys.map((j, ji) => (
         <div key={`${li}-${ji}`} className="rounded-xl border border-slate-200 p-4">
           <div className="mb-3 flex flex-wrap items-center gap-3">
-            <AirlineMark code={j.flights[0].code} size={34} />
+            <AirlineMark code={j.flights[0].code} name={j.flights[0].airline} size={36} />
             <p className="font-display text-[1.05rem] font-bold text-ink">{cityOf(j.from)} → {cityOf(j.to)}</p>
             <p className="text-[0.85rem] text-slate-600">{longDate(j.dep)}</p>
             <p className="ml-auto text-[0.82rem] font-semibold text-slate-600">{dur(j.minutes)} · {j.stops ? `${j.stops} stop${j.stops > 1 ? 's' : ''}` : 'Non-stop'}</p>

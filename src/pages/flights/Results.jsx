@@ -200,7 +200,7 @@ function FlightCard({ session, r, fares, picked, selected, onSelect, single, bad
   return (
     <li className={`rounded-2xl border bg-white p-4 shadow-sm transition ${selected ? 'border-brand-500 ring-2 ring-brand-500/25' : 'border-slate-200 hover:border-slate-400'}`}>
       <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
-        <AirlineMark code={r.airlineCode || r.journeys[0].flights[0].code} size={32} />
+        <AirlineMark code={r.airlineCode || r.journeys[0].flights[0].code} name={r.airline} size={36} />
         <p className="font-semibold text-ink">{r.airline}</p>
         <p className="font-mono text-[0.8rem] text-slate-500">{r.journeys.flatMap((j) => j.flights).map((g) => `${g.code}-${g.number}`).join(' · ')}</p>
         <div className="ml-auto flex flex-wrap gap-1.5">
