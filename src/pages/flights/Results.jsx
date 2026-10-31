@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ArrowRight, BadgeCheck, Check, ChevronDown, ChevronUp, Filter, Loader2, Luggage, Pencil, Plane, RotateCcw, Users, X } from 'lucide-react'
 
 import SearchWidget, { useMonthFares } from './Search.jsx'
-import { addDays, AirlineMark, api, bucketOf, cityOf, dateLabel, dayMonth, dur, inr, minutesBetween, PenaltyBar, time, TIME_BUCKETS, todayIso, weekday } from './shared.jsx'
+import { addDays, AirlineMark, bucketOf, cityOf, dateLabel, dayMonth, dur, inr, minutesBetween, FeeSummary, PenaltyBar, time, TIME_BUCKETS, todayIso, useFees, useSeen, weekday } from './shared.jsx'
 
 /* Results: modify-search bar, ±3-day fare strip, filters, sort tabs, expandable flight cards
    and a sticky "book" bar for round trips. All filtering/sorting happens in the browser on the
@@ -145,18 +145,15 @@ function Details({ r }) {
 }
 
 function Fees({ session, fare }) {
-  const [state, setState] = useState('idle') // idle | loading | done | none
-  const [rules, setRules] = useState([])
-  const load = () => {
-    setState('loading')
-    api('fareRules', { session, resultIndex: fare.resultIndex })
-      .then((r) => { const ok = (r.rules || []).filter((x) => x.mini?.Rules?.length); setRules(ok); setState(ok.length ? 'done' : 'none') })
-      .catch(() => setState('none'))
-  }
-  if (state === 'idle') return <button type="button" className="mt-2 w-full text-left text-[0.8rem] font-bold text-brand-500" onClick={load}>See cancellation &amp; date-change fees</button>
-  if (state === 'loading') return <p className="mt-2 flex items-center gap-2 text-[0.8rem] text-slate-500"><Loader2 size={13} className="animate-spin" /> Getting the airline's fees…</p>
-  if (state === 'none') return <p className="mt-2 text-[0.8rem] text-slate-500">The airline hasn't published fees for this fare yet. You'll see its full rules before you pay.</p>
-  return <div className="mt-2 w-full border-t border-slate-100 pt-1">{rules.map((r, i) => <div key={i}><PenaltyBar rules={r.mini.Rules} type={1} title="Cancellation fee" /><PenaltyBar rules={r.mini.Rules} type={2} title="Date change fee" /></div>)}</div>
+  const [ref, seen] = useSeen()
+  const { state, rules } = useFees(session, fare.resultIndex, seen)
+  return (
+    <div ref={ref} className="w-full">
+      {state === 'done' ? <div className="border-t border-slate-100 pt-1">{rules.map((r, i) => <div key={i}><PenaltyBar rules={r.mini.Rules} type={1} title="Cancellation fee" /><PenaltyBar rules={r.mini.Rules} type={2} title="Date change fee" /></div>)}</div>
+        : state === 'none' ? <p className="mt-2 text-[0.8rem] text-slate-500">Fees not published by the airline for this fare.</p>
+        : <p className="mt-2 flex items-center gap-2 text-[0.8rem] text-slate-500"><Loader2 size={13} className="animate-spin" /> Getting the airline's fees…</p>}
+    </div>
+  )
 }
 
 function FareOptions({ fares, pax, picked, single, busy, onBook, onSelect, session }) {
@@ -226,6 +223,8 @@ function FlightCard({ session, r, fares, picked, selected, onSelect, single, bad
           )}
         </div>
       </div>
+
+      <FeeSummary key={r.resultIndex} session={session} fare={r} />
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2 text-[0.8rem] text-slate-600">
         <p className="flex flex-wrap items-center gap-x-3 gap-y-1">

@@ -1,4 +1,5 @@
-import { Check } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Check, Loader2 } from 'lucide-react'
 
 import { AIRPORTS } from '../../../api/_lib/airports.js'
 
@@ -92,9 +93,11 @@ const hoursLabel = (h) => (h >= 48 ? `${Math.round(h / 24)} days` : h >= 1 ? `${
 
 /* Cancellation / date-change fee by how long before departure, drawn as a bar like the big sites do.
    Uses the airline's own mini fare rules; shows nothing when they are missing or unreadable. */
+export const segsOf = (rules, type) => (rules || []).filter((m) => m.Type === type).map((m) => ({ from: hoursOf(m.FromDuration) ?? 0, to: m.ToDuration ? hoursOf(m.ToDuration) : null, fee: (m.PaxPenalties || [])[0]?.AirlineFee }))
+  .filter((x) => x.fee != null).sort((a, b) => b.from - a.from)
+
 export function PenaltyBar({ rules, type, title }) {
-  const segs = (rules || []).filter((m) => m.Type === type).map((m) => ({ from: hoursOf(m.FromDuration) ?? 0, to: m.ToDuration ? hoursOf(m.ToDuration) : null, fee: (m.PaxPenalties || [])[0]?.AirlineFee }))
-    .filter((x) => x.fee != null).sort((a, b) => b.from - a.from)
+  const segs = segsOf(rules, type)
   if (!segs.length) return null
   const colour = (fee) => (fee === 0 ? 'bg-palm' : 'bg-gold-500')
   return (
@@ -104,6 +107,85 @@ export function PenaltyBar({ rules, type, title }) {
       <ul className="mt-2 grid gap-1 text-[0.8rem] text-slate-700">
         {segs.map((x, i) => <li key={i} className="flex justify-between gap-3 rounded-lg bg-sand/60 px-3 py-1.5"><span>{x.to == null ? `More than ${hoursLabel(x.from)} before` : x.from ? `${hoursLabel(x.from)} to ${hoursLabel(x.to)} before` : `Up to ${hoursLabel(x.to)} before`} departure</span><span className="font-bold">{x.fee === 0 ? 'Free' : `${inr(x.fee)} + our fee`}</span></li>)}
       </ul>
+    </div>
+  )
+}
+
+/* ---------------- fees on the results page ---------------- */
+
+// TBO needs one FareRule call per fare. Fetch them as cards scroll into view, three at a time, once each.
+const FEE_CACHE = new Map()
+const FEE_QUEUE = []
+let feeRunning = 0
+function pumpFees() {
+  while (feeRunning < 3 && FEE_QUEUE.length) {
+    const job = FEE_QUEUE.shift()
+    feeRunning++
+    api('fareRules', { session: job.session, resultIndex: job.resultIndex })
+      .then((r) => job.done((r.rules || []).filter((x) => x.mini?.Rules?.length)))
+      .catch(() => job.done(null))
+      .finally(() => { feeRunning--; pumpFees() })
+  }
+}
+function feesFor(session, resultIndex) {
+  const key = `${String(session).slice(-24)}|${resultIndex}`
+  if (!FEE_CACHE.has(key)) FEE_CACHE.set(key, new Promise((done) => { FEE_QUEUE.push({ session, resultIndex, done }); pumpFees() }))
+  return FEE_CACHE.get(key)
+}
+
+/** { state: 'idle' | 'loading' | 'done' | 'none', rules } for one fare, fetched once `on` turns true. */
+export function useFees(session, resultIndex, on) {
+  const [s, setS] = useState({ state: 'idle', rules: [] })
+  useEffect(() => {
+    if (!on || !session || !resultIndex) return undefined
+    let live = true
+    setS((x) => (x.state === 'idle' ? { state: 'loading', rules: [] } : x))
+    feesFor(session, resultIndex).then((r) => live && setS(r?.length ? { state: 'done', rules: r } : { state: 'none', rules: [] }))
+    return () => { live = false }
+  }, [on, session, resultIndex])
+  return s
+}
+
+/** True once the element has come near the screen (and stays true). */
+export function useSeen() {
+  const ref = useRef(null)
+  const [seen, setSeen] = useState(typeof IntersectionObserver === 'undefined')
+  useEffect(() => {
+    if (seen || !ref.current) return undefined
+    const io = new IntersectionObserver(([e]) => { if (e.isIntersecting) { setSeen(true); io.disconnect() } }, { rootMargin: '300px' })
+    io.observe(ref.current)
+    return () => io.disconnect()
+  }, [seen])
+  return [ref, seen]
+}
+
+const shortWindow = (x) => (x.to == null ? `Over ${hoursLabel(x.from)} before` : x.from ? `${hoursLabel(x.from)} – ${hoursLabel(x.to)} before` : `Within ${hoursLabel(x.to)}`)
+
+/** The two fee lists, always visible on the card: what the airline charges to cancel or to change the date. */
+export function FeeSummary({ session, fare }) {
+  const [ref, seen] = useSeen()
+  const { state, rules } = useFees(session, fare.resultIndex, seen)
+  const mini = rules[0]?.mini?.Rules
+  return (
+    <div ref={ref} className="mt-3 rounded-xl border border-slate-200 bg-sand/50 p-3 text-[0.8rem]" aria-live="polite">
+      {state === 'done' ? (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {[[1, 'Cancellation fee'], [2, 'Date change fee']].map(([t, title]) => {
+            const segs = segsOf(mini, t)
+            return (
+              <div key={t}>
+                <p className="mb-1 font-bold text-ink">{title}</p>
+                {segs.length ? <ul className="grid gap-0.5">{segs.map((x, i) => <li key={i} className="flex justify-between gap-2 text-slate-700"><span>{shortWindow(x)}</span><span className={`font-bold ${x.fee === 0 ? 'text-palm' : 'text-ink'}`}>{x.fee === 0 ? 'Free' : inr(x.fee)}</span></li>)}</ul> : <p className="text-slate-500">Not published by the airline.</p>}
+              </div>
+            )
+          })}
+          <p className="text-[0.72rem] text-slate-500 sm:col-span-2">Airline fee per traveller; our service fee is extra. Exact rules are shown again before you pay.</p>
+        </div>
+      ) : state === 'none' ? (
+        <p className="text-slate-600">The airline hasn't published cancellation or date-change fees for this fare. Our team confirms them with you before ticketing.</p>
+      ) : (
+        <p className="flex items-center gap-2 text-slate-500"><Loader2 size={13} className="animate-spin" /> Getting cancellation and date-change fees…</p>
+      )}
     </div>
   )
 }
