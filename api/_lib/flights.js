@@ -654,7 +654,11 @@ function bookingSummary(d) {
     status: it.Status,
     airline: it.AirlineCode,
     passengers: (it.Passenger || []).map((p) => ({ name: `${p.Title} ${p.FirstName} ${p.LastName}`, ticket: p.Ticket?.TicketNumber || '' })),
-    segments: (it.Segments || []).map((g) => ({ flight: `${g.Airline.AirlineCode} ${g.Airline.FlightNumber}`, from: g.Origin.Airport.AirportCode, to: g.Destination.Airport.AirportCode, dep: g.Origin.DepTime })),
+    segments: (it.Segments || []).map((g) => ({
+      flight: `${g.Airline.AirlineCode} ${g.Airline.FlightNumber}`, airline: g.Airline.AirlineName,
+      from: g.Origin.Airport.AirportCode, to: g.Destination.Airport.AirportCode, dep: g.Origin.DepTime, arr: g.Destination.ArrTime,
+      fromTerminal: g.Origin.Airport.Terminal, toTerminal: g.Destination.Airport.Terminal, baggage: g.Baggage, cabinBaggage: g.CabinBaggage,
+    })),
   }
 }
 
