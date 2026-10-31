@@ -1,5 +1,5 @@
 import { search, quote, checkout, ticket, calendar } from './_lib/flights.js'
-import { TboError, IS_LIVE } from './_lib/tbo.js'
+import { TboError, IS_LIVE, flushLogs } from './_lib/tbo.js'
 
 /**
  * Vercel serverless function — the website's only door to the TBO Air API.
@@ -28,10 +28,12 @@ export default async function handler(req, res) {
 
   try {
     const data = await fn(payload)
+    await flushLogs()
     res.setHeader('Cache-Control', 'no-store')
     return res.status(200).json(data)
   } catch (e) {
     const status = e instanceof TboError ? e.status || 502 : 500
+    await flushLogs()
     if (!(e instanceof TboError)) console.error('[flights]', action, e)
     return res.status(status).json({ error: e instanceof TboError ? e.message : 'Something went wrong. Please try again or call us.', code: e.code ?? null })
   }

@@ -26,7 +26,7 @@ export default function Privacy() {
       <LegalSection title="2. The short version">
         <LegalList
           items={[
-            'This website has no account sign-up and does not save what you type into our enquiry form. Pressing “send” opens WhatsApp with your message pre-filled; nothing is sent until you press send in WhatsApp.',
+            'This website has no account sign-up. When you press “send” on our enquiry form, WhatsApp opens with your message pre-filled, and we also save a copy (your name, phone number and what you asked for) in our booking system so our desk can follow up. The form tells you this before you send. Nothing else you type on the site is saved.',
             'We only ask for what we need to quote and book your trip, and we only share it with the airline, hotel, embassy or other supplier that needs it.',
             'We do not sell your data, and we do not use it for advertising profiles.',
             'You can ask to see, correct or delete your data, or withdraw consent, at any time by writing to our Grievance Officer (section 11).',
@@ -96,6 +96,7 @@ export default function Privacy() {
             'For Umrah and Hajj: the Saudi authorities and platforms (such as Nusuk), and the licensed operators in Saudi Arabia who provide your visa, hotel and transport; for Hajj, also the Government of India / Haj Committee processes that apply.',
             'Travel insurers, if you ask us to arrange insurance.',
             'Payment processors and banks (Razorpay, when used) to take payments and send refunds.',
+            'Our database and back-office provider (Supabase, with servers in Sweden), where enquiries and booking records are stored.',
             'Our chartered accountant, and government or law-enforcement authorities where the law requires it.',
           ]}
         />
@@ -198,7 +199,7 @@ export default function Privacy() {
           items={[
             'Our lawful bases are: taking steps at your request before and under a contract (quotes and bookings); legal obligation (tax records); consent (anything optional); and legitimate interests (keeping the website working and secure).',
             'You also have the rights to restrict or object to processing and to data portability, and you may complain to your local data protection authority (for the UK, the ICO).',
-            'We are based in India, so your data is processed in India and sent to suppliers wherever your trip takes you. These transfers are necessary to perform the travel contract you have asked for.',
+            'We are based in India. Enquiry and booking records are stored with our database provider (Supabase) on servers in Sweden, and your data is sent to suppliers wherever your trip takes you. These transfers are necessary to perform the travel contract you have asked for.',
           ]}
         />
       </LegalSection>

@@ -74,12 +74,34 @@ src/
 
 ## Forms
 
-The enquiry form has no backend on purpose: on submit the fields become a formatted message and WhatsApp
-opens pre-filled, so enquiries land straight in the desk's chat and nothing is stored on the site. To
-capture leads server-side later (e.g. a Google Sheet or email), replace the `submit` handler in
-`src/components/EnquiryForm.jsx` with a `fetch()` to a serverless function — and update the Privacy Policy.
+The enquiry form opens WhatsApp with the message pre-filled (that part never depends on anything else) and also saves a
+copy in the CRM so the desk can follow up. The form says so before sending and the Privacy Policy covers it
+(`POST /api/enquiry`, saved only when Supabase is connected). Spam: a hidden field bots fill in, a per-IP limit, and a
+10-minute duplicate check.
 
 The visa data in `src/data/visas.js` is indicative and hand-maintained; review it regularly.
+
+## Back office (CRM) — `/crm`
+
+Staff-only: every flight booking (including abandoned and failed payments), every website enquiry, and the TBO API logs.
+
+- **Bookings**: created when payment starts, updated when payment clears and the ticket is issued
+  (`api/_lib/store.js`). Passengers, PNRs, ticket numbers, payment ids, a timeline, staff notes, status and assignee.
+- **Enquiries**: status pipeline (new, contacted, quoted, won, lost), notes, one-tap WhatsApp / call / e-mail.
+- **TBO logs**: every request and response, grouped by search (large search replies are stored as a summary).
+- **Settings**: TBO wallet balance, CSV exports, and the 12-month enquiry clean-up the Privacy Policy promises.
+
+**Set up once**
+1. Supabase project: run `supabase/schema.sql` (SQL editor, or `DATABASE_URL=... node scripts/db-apply.mjs`). Safe to re-run.
+2. Server settings (Vercel -> Environment Variables, Production; never prefix with `VITE_`):
+   `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` (the **secret** key), `SUPABASE_PUBLISHABLE_KEY`, `CRM_ALLOWED_EMAILS`
+   (comma-separated staff e-mails; with this empty nobody can sign in).
+3. Create each staff login: `node scripts/crm-add-staff.mjs name@example.com` (prints a password once).
+   Signing in needs the Supabase account **and** the e-mail on `CRM_ALLOWED_EMAILS`.
+
+Security notes: tables have row-level security with no public policies, so the browser can only reach data through
+`/api/crm`, which checks the staff token's signature (Supabase public keys), expiry and the allow-list on every call.
+The session lives in the browser tab only. Rotate the secret key if it is ever pasted somewhere it should not be.
 
 ## Motion & accessibility rules
 

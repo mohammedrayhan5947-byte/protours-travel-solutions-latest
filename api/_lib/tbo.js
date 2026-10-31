@@ -64,20 +64,34 @@ export class TboError extends Error {
 /* ---------- logging ---------- */
 
 let seq = 0
+// Writes still in flight: a serverless function can be frozen once it has replied, so the API handler
+// awaits flushLogs() before answering.
+const pending = new Set()
+export const flushLogs = () => Promise.allSettled([...pending])
+
 /** Copies every request/response to Supabase (tbo_logs) when SUPABASE_URL + SUPABASE_SERVICE_KEY are set. */
 function toSupabase(method, traceId, kind, body) {
   const url = process.env.SUPABASE_URL, key = process.env.SUPABASE_SERVICE_KEY
   if (!url || !key) return
-  fetch(`${url}/rest/v1/tbo_logs`, {
+  const p = fetch(`${url}/rest/v1/tbo_logs`, {
     method: 'POST',
-    headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+    headers: { apikey: key, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
     body: JSON.stringify({ env: ENV, trace_id: traceId || null, method, kind, body }),
-  }).catch(() => {})
+    signal: AbortSignal.timeout(8000),
+  }).catch(() => {}).finally(() => pending.delete(p))
+  pending.add(p)
+}
+
+/** A Search reply can be several MB: keep a summary in the database unless TBO_LOG_SEARCH=full. */
+const BIG = new Set(['Search', 'GetCalendarFare', 'PriceRBD'])
+function trimBig(body) {
+  const r = body?.Response
+  return { note: 'Large reply trimmed; set TBO_LOG_SEARCH=full to keep the whole payload', ResponseStatus: r?.ResponseStatus, TraceId: r?.TraceId, Error: r?.Error, resultCount: (r?.Results || r?.SearchResults || []).map((x) => (Array.isArray(x) ? x.length : 1)) }
 }
 
 function log(method, traceId, kind, body) {
   const safe = redact(body)
-  toSupabase(method, traceId, kind, safe)
+  toSupabase(method, traceId, kind, BIG.has(method) && kind === 'response' && LOG_MODE !== 'full' ? trimBig(body) : safe)
   if (!LOG_DIR) {
     // Vercel: keep logs short — full payloads only for booking-side calls.
     if (kind === 'response' && method !== 'Search') console.log(`[tbo] ${method} ${traceId || ''} ${JSON.stringify(safe).slice(0, 2000)}`)

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { recordBooking } from './store.js'
+import { recordCheckout, recordPaid, recordPaymentFailed, recordOutcome } from './store.js'
 import { air, authenticate, seal, unseal, customerPrice, fakePaymentsAllowed, IS_LIVE, TboError } from './tbo.js'
 import { AIRPORTS } from './airports.js'
 
@@ -98,6 +98,9 @@ function pickClass(av = []) {
   const open = av.filter((a) => Number(a.Seats) > 0)
   return (open.find((a) => a.Class === 'Y') || open[0] || {}).Class || ''
 }
+
+/** 'BLR-DEL' (or 'BLR-DEL DEL-BLR' for a result holding both directions), for the CRM. */
+const routeOf = (segments) => (segments || []).map((j) => `${j?.[0]?.Origin?.Airport?.AirportCode}-${j?.at(-1)?.Destination?.Airport?.AirportCode}`).join(' ')
 
 /** GetCalendarFare: lowest fare per day for a one-way month view. */
 export async function calendar(input) {
@@ -230,6 +233,7 @@ export async function quote({ session: token, resultIndexes, rbd }) {
     pax: s.pax,
     legs: priced.map(({ resultIndex, isLCC, isGSTMandatory, passportAtBook, passportAtTicket, fare, breakdown, price, segments, mealRequired, seatRequired, panRequired, passportFull, airlineCode, source }) => ({
       resultIndex, isLCC, isGSTMandatory, passportAtBook, passportAtTicket, fare, breakdown, price, mealRequired, seatRequired, panRequired, passportFull, airlineCode, source,
+      route: routeOf(segments),
       depDate: segments?.[0]?.[0]?.Origin?.DepTime,
       lastDepDate: segments?.at(-1)?.at(-1)?.Origin?.DepTime,
     })),
@@ -326,6 +330,12 @@ export async function checkout({ quote: token, passengers, contact, gst, choices
   }
 
   const checkoutToken = seal({ session: q.session, payloads, amount, orderId: payment.orderId, orderRef, contact: paxList.contact }, 15 * 60 * 1000)
+  await recordCheckout({
+    orderRef, traceId: q.session.traceId, amount, orderId: payment.orderId, contact: paxList.contact, pax: paxList, journey: q.journey,
+    route: q.legs.map((l) => l.route).filter(Boolean).join(' | '),
+    travelDate: q.legs.map((l) => l.depDate).filter(Boolean).sort()[0],
+    returnDate: q.legs.length > 1 ? q.legs.at(-1).depDate : q.legs[0]?.lastDepDate !== q.legs[0]?.depDate ? q.legs[0]?.lastDepDate : null,
+  })
   return { checkout: checkoutToken, amount, fareTotal, ssrTotal: Math.ceil(ssrTotal), orderRef, payment }
 }
 
@@ -546,7 +556,13 @@ const paxTotal = (leg) => (leg.breakdown || []).reduce((t, b) => t + (b.Passenge
 
 export async function ticket({ checkout: token, payment }) {
   const c = unseal(token, 'checkout')
-  await confirmPayment(c, payment)
+  try {
+    await confirmPayment(c, payment)
+  } catch (e) {
+    await recordPaymentFailed(c.orderRef, e.message)
+    throw e
+  }
+  await recordPaid(c.orderRef, payment?.paymentId || c.orderId)
 
   const results = []
   for (const leg of c.payloads) {
@@ -611,7 +627,7 @@ export async function ticket({ checkout: token, payment }) {
     results.push({ bookingId, pnr, ticketStatus: status, error, details })
   }
   const out = { orderRef: c.orderRef, amount: c.amount, results }
-  recordBooking({ ...out, traceId: c.session.traceId, paymentId: payment?.paymentId || c.orderId, contact: c.contact })
+  await recordOutcome({ ...out, paymentId: payment?.paymentId || c.orderId })
   return out
 }
 

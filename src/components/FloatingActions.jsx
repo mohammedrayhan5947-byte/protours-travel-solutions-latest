@@ -36,6 +36,9 @@ export default function FloatingActions() {
   const context = CONTEXT[pathname]
   const wa = waLink(context ? `Hello ${BIZ.name}, ${context}.` : undefined)
 
+  // The back office (/crm) is staff-only: no customer contact buttons over its tables.
+  if (pathname === '/crm') return null
+
   return (
     <>
       {/* ---------- Desktop: one clear WhatsApp button + back to top ---------- */}

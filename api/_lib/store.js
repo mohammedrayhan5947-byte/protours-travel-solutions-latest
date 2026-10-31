@@ -1,42 +1,88 @@
-import fs from 'node:fs'
-import path from 'node:path'
+import { db, dbConfigured, addEvent } from './db.js'
 import { IS_LIVE } from './tbo.js'
 
 /**
- * Booking records for the CRM. Until Supabase is connected they go to
- * .data/bookings.jsonl (local only); with SUPABASE_URL + SUPABASE_SERVICE_KEY
- * they are also written to the flight_bookings table (supabase/schema.sql).
+ * Booking records for the CRM (Supabase table flight_bookings + a timeline in crm_events).
+ * A row is created when payment starts, so abandoned and failed attempts are visible too, and it is
+ * updated as the payment clears and the ticket is issued. Everything is awaited (a serverless function
+ * may be frozen the moment it replies) and nothing here ever throws: a booking must not fail
+ * because record-keeping did.
  */
-const DIR = path.resolve(process.cwd(), '.data')
-export const BOOKINGS_FILE = path.join(DIR, 'bookings.jsonl')
+const TYPE = { 1: 'Adult', 2: 'Child', 3: 'Infant' }
+const day = (iso) => (iso ? String(iso).slice(0, 10) : null)
 
-export function recordBooking(b) {
-  const ok = b.results.every((r) => r.bookingId && !r.error)
-  const row = {
-    created_at: new Date().toISOString(),
-    order_ref: b.orderRef,
-    env: IS_LIVE ? 'live' : 'staging',
-    trace_id: b.traceId,
-    status: ok ? 'ticketed' : b.results.some((r) => r.pnr) ? 'needs_attention' : 'failed',
-    amount_inr: b.amount,
-    payment_id: b.paymentId,
-    contact_phone: b.contact?.phone || null,
-    contact_email: b.contact?.email || null,
-    legs: b.results,
-  }
-  if (!process.env.VERCEL) {
-    try {
-      fs.mkdirSync(DIR, { recursive: true })
-      fs.appendFileSync(BOOKINGS_FILE, JSON.stringify(row) + '\n')
-    } catch { /* never block a booking on record-keeping */ }
-  }
-  const url = process.env.SUPABASE_URL, key = process.env.SUPABASE_SERVICE_KEY
-  if (url && key) {
-    fetch(`${url}/rest/v1/flight_bookings`, {
-      method: 'POST',
-      headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
-      body: JSON.stringify(row),
-    }).catch(() => {})
-  }
-  return row
+async function safe(fn) {
+  if (!dbConfigured()) return null
+  try { return await fn() } catch (e) { console.error('[crm] could not record:', e.message); return null }
 }
+
+async function patchByRef(orderRef, patch) {
+  const { rows } = await db(`flight_bookings?order_ref=eq.${encodeURIComponent(orderRef)}`, { method: 'PATCH', body: patch, prefer: 'return=representation' })
+  return rows?.[0] || null
+}
+
+/** Payment is about to start: create (or refresh) the booking row. */
+export const recordCheckout = (b) => safe(async () => {
+  const lead = b.pax?.[0]
+  const { rows } = await db('flight_bookings?on_conflict=order_ref', {
+    method: 'POST',
+    prefer: 'resolution=merge-duplicates,return=representation',
+    body: {
+      order_ref: b.orderRef,
+      env: IS_LIVE ? 'live' : 'staging',
+      trace_id: b.traceId || null,
+      status: 'payment_pending',
+      amount_inr: b.amount,
+      razorpay_order_id: b.orderId || null,
+      customer_name: lead ? `${lead.title} ${lead.first} ${lead.last}`.trim() : null,
+      contact_phone: b.contact?.phone || null,
+      contact_email: b.contact?.email || null,
+      journey: b.journey || null,
+      route: b.route || null,
+      travel_date: day(b.travelDate),
+      return_date: day(b.returnDate),
+      pax_count: b.pax?.length || null,
+      pax: (b.pax || []).map((p) => ({ type: TYPE[p.paxType] || 'Adult', name: `${p.title} ${p.first} ${p.last}`.trim() })),
+    },
+  })
+  if (rows?.[0]?.id) await addEvent('booking', rows[0].id, 'created', 'customer', { amount: b.amount, route: b.route })
+  return rows?.[0]?.id || null
+})
+
+/** The payment was confirmed; ticketing is about to start. */
+export const recordPaid = (orderRef, paymentId) => safe(async () => {
+  const row = await patchByRef(orderRef, { status: 'paid', payment_id: paymentId || null })
+  if (row) await addEvent('booking', row.id, 'paid', 'system', { paymentId })
+})
+
+/** The payment could not be confirmed (bad signature, cancelled...). The row stays "payment_pending". */
+export const recordPaymentFailed = (orderRef, message) => safe(async () => {
+  const { rows } = await db(`flight_bookings?order_ref=eq.${encodeURIComponent(orderRef)}&select=id`)
+  if (rows?.[0]) await addEvent('booking', rows[0].id, 'payment_failed', 'system', { message: String(message).slice(0, 300) })
+})
+
+/** Ticketing finished (or half-finished): final status, PNRs, tickets. */
+export const recordOutcome = (b) => safe(async () => {
+  const ok = b.results.every((r) => r.bookingId && !r.error)
+  const status = ok ? 'ticketed' : b.results.some((r) => r.pnr) ? 'needs_attention' : 'failed'
+  // keep the customer-entered names, add ticket numbers from the airline's record
+  const tickets = new Map(b.results.flatMap((r) => (r.details?.passengers || []).map((p) => [String(p.name).toUpperCase(), p.ticket])))
+  const cur = await db(`flight_bookings?order_ref=eq.${encodeURIComponent(b.orderRef)}&select=pax`)
+  const pax = (cur.rows?.[0]?.pax || []).map((p) => ({ ...p, ticket: tickets.get(String(p.name).toUpperCase()) || p.ticket || '' }))
+  const row = await patchByRef(b.orderRef, {
+    status,
+    payment_id: b.paymentId || null,
+    legs: b.results,
+    pnr: b.results.map((r) => r.pnr).filter(Boolean).join(', ') || null,
+    booking_ids: b.results.map((r) => r.bookingId).filter(Boolean).join(', ') || null,
+    ...(pax.length ? { pax } : {}),
+  })
+  if (row) {
+    await addEvent('booking', row.id, status === 'ticketed' ? 'ticketed' : 'failed', 'system', {
+      status,
+      pnr: row.pnr,
+      errors: b.results.map((r) => r.error).filter(Boolean),
+    })
+  }
+  return status
+})
