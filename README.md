@@ -159,6 +159,16 @@ One-time setup (Supabase dashboard + one SQL run):
 4. Authentication, SMTP Settings: set a real SMTP provider (Resend, Brevo, Amazon SES...). Supabase's built-in mail sender allows only a few
    e-mails per hour, which is fine for testing and not for customers. Edit the e-mail templates (Confirm signup, Reset password) to carry your name.
 
+**Continue with Google** (Firebase Authentication is only the doorway to Google): the button opens Google's sign-in window and returns a
+signed ID token; `api/account.js` (`action: google`, `api/_lib/google.js`) verifies it against Google's certificates (signature, our
+Firebase project, issuer, expiry, provider = google.com, e-mail verified) and turns the e-mail into an ordinary Supabase session, so My trips,
+bookings and the CRM rules are identical to password accounts. The same e-mail used both ways is one account. If someone had registered an
+address with a password before its owner confirmed it, that password is cleared when the owner signs in with Google. The Firebase web config
+in `src/pages/account/google.js` is public by design. Firebase is not kept in the browser after sign-in, and no Firebase Analytics is used.
+In the Firebase console (project `sajjad-9c9d7`): Authentication, Sign-in method, Google = enabled; Settings, Authorized domains must include
+`www.protoursandtravelsolutions.com`, `protoursandtravelsolutions.com` and `localhost` (Vercel preview URLs too, if you test on them).
+The Content-Security-Policy in `vercel.json` allows exactly the Google/Firebase hosts this needs. `FIREBASE_PROJECT_ID` overrides the project id.
+
 Limits and notes: customer sessions are kept in the browser (localStorage) so they stay signed in; sign-in guesses are throttled per IP and per
 e-mail; password resets and sign-ups are rate-limited; an account is deleted from Authentication, Users in the dashboard.
 

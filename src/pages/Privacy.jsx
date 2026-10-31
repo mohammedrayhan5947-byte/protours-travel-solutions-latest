@@ -98,6 +98,7 @@ export default function Privacy() {
             'Travel insurers, if you ask us to arrange insurance.',
             'Payment processors and banks (Razorpay, when used) to take payments and send refunds.',
             'Our database and back-office provider (Supabase, with servers in Sweden), where enquiries and booking records are stored.',
+            'Google (through Firebase Authentication), only if you choose “Continue with Google”: it confirms your Google account and gives us your name and verified e-mail address. We do not receive your Google password.',
             'Our chartered accountant, and government or law-enforcement authorities where the law requires it.',
           ]}
         />

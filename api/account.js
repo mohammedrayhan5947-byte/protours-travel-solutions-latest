@@ -1,5 +1,6 @@
 import { rpc, dbConfigured, DbError } from './_lib/db.js'
 import { AuthError } from './_lib/auth.js'
+import { sessionForEmail, verifyGoogleToken } from './_lib/google.js'
 import { EMAIL, checkPassword, passwordLogin, refreshSession, requireUser, saveProfile, sendReset, setPassword, signUp, verifiedEmail } from './_lib/customer.js'
 
 /**
@@ -59,6 +60,15 @@ const ACTIONS = {
   },
 
   refresh: (b) => refreshSession(b.refreshToken),
+
+  /** "Continue with Google": a Firebase ID token in, a normal account session out (see api/_lib/google.js). */
+  async google(b, req) {
+    limit(`gg:${ipOf(req)}`, 20, 10 * 60_000, 'Too many sign-in attempts. Please wait a few minutes.')
+    const who = await verifyGoogleToken(b.idToken)
+    const out = await sessionForEmail(who.email, who.name)
+    audit('google_login')
+    return out
+  },
 
   async forgot(b, req) {
     const email = clip(b.email, 120).toLowerCase()
