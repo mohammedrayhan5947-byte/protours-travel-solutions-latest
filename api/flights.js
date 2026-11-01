@@ -1,5 +1,5 @@
 import { search, quote, checkout, ticket, calendar, fareRules } from './_lib/flights.js'
-import { TboError, IS_LIVE, flushLogs } from './_lib/tbo.js'
+import { TboError, IS_LIVE, flushLogs, withEndUserIp } from './_lib/tbo.js'
 import { optionalUser } from './_lib/customer.js'
 
 /**
@@ -28,7 +28,13 @@ function tooMany(action, req) {
   return false
 }
 
-export default async function handler(req, res) {
+// Vercel sets x-forwarded-for to the real client address; the gateway logs it next to each TBO call.
+const customerIp = (req) => String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || String(req.headers['x-real-ip'] || '')
+export default function handler(req, res) {
+  return withEndUserIp(customerIp(req), () => run(req, res))
+}
+
+async function run(req, res) {
   if (req.method === 'GET') {
     // Lets the page know whether online flight booking is switched on here.
     return res.status(200).json({ enabled: flightsEnabled(), live: IS_LIVE })
