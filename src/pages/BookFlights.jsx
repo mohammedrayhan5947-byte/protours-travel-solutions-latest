@@ -23,7 +23,32 @@ const Done = lazy(() => import('./flights/Done.jsx'))
  *  - A failed attempt does NOT end the booking: Checkout lets the customer retry, and only closing the window cancels.
  *  - What we get back is only a claim ("I paid"); the server checks it with Razorpay before buying anything.
  */
-function razorpay(c, contact) {
+/** "BLR → DEL · Sat, 5 Dec / DEL → BLR · Thu, 10 Dec · 3 travellers": what the customer sees under our name in the payment window. */
+function payDescription(q) {
+  const legs = (q?.legs || []).map((l) => `${l.journeys[0].from} → ${l.journeys.at(-1).to} · ${dateLabel(l.journeys[0].dep)}`)
+  const n = (q?.pax?.adults || 0) + (q?.pax?.children || 0) + (q?.pax?.infants || 0)
+  return (legs.join(' / ') + (n ? ` · ${n} traveller${n > 1 ? 's' : ''}` : '')).slice(0, 250) || 'Flight booking'
+}
+
+/* How the Razorpay window looks: our name, logo and colours, the trip in plain words, and UPI first. */
+const PAY_LOOK = {
+  theme: { color: '#0a3560', backdrop_color: 'rgba(4, 24, 44, 0.82)' },
+  config: {
+    display: {
+      blocks: {
+        upi: { name: 'Pay with UPI', instruments: [{ method: 'upi' }] },
+        card: { name: 'Pay with card', instruments: [{ method: 'card' }] },
+        netbanking: { name: 'Pay with net banking', instruments: [{ method: 'netbanking' }] },
+        wallet: { name: 'Pay with a wallet', instruments: [{ method: 'wallet' }] },
+        paylater: { name: 'Pay later', instruments: [{ method: 'paylater' }] },
+      },
+      sequence: ['block.upi', 'block.card', 'block.netbanking', 'block.wallet', 'block.paylater'],
+      preferences: { show_default_blocks: false }, // only our ordered list, no second copy of the same methods (methods your account has not enabled are hidden by Razorpay)
+    },
+  },
+}
+
+function razorpay(c, contact, summary) {
   return new Promise((resolve, reject) => {
     let lastFailure = ''
     const open = () => {
@@ -34,17 +59,19 @@ function razorpay(c, contact) {
         order_id: c.payment.orderId,
         amount: c.payment.amountPaise,
         currency: 'INR',
-        name: BIZ.name,
-        description: `Flight booking ${c.orderRef}`,
+        name: 'Pro Tours & Travel', // short enough that Razorpay does not cut it off
+        description: summary || `Flight booking ${c.orderRef}`,
+        image: `${window.location.origin}/pay-logo.png`,
         prefill: { email: contact.email, contact: contact.phone },
         notes: { booking: c.orderRef },
-        theme: { color: '#0b2545' },
+        ...PAY_LOOK,
         timeout: Math.min(secondsLeft, 900),
         retry: { enabled: true, max_count: 3 },
         handler: (r) => resolve({ orderId: r.razorpay_order_id, paymentId: r.razorpay_payment_id, signature: r.razorpay_signature }),
         modal: {
           confirm_close: true,
           escape: false,
+          backdropclose: false,
           ondismiss: () => reject(new Error(lastFailure ? `${lastFailure} Nothing has been booked and you have not been charged.` : 'Payment was cancelled. Nothing has been booked.')),
         },
       })
@@ -155,7 +182,7 @@ export default function BookFlights() {
   const pay = (details) =>
     run('pay', async () => {
       const c = await api('checkout', { quote: q.quote, ...details })
-      const payment = c.payment.mode === 'razorpay' ? await razorpay(c, details.contact) : { orderId: c.payment.orderId }
+      const payment = c.payment.mode === 'razorpay' ? await razorpay(c, details.contact, payDescription(q)) : { orderId: c.payment.orderId }
       setBusy('ticket')
       const t = await issueTicket(c, payment)
       // the booking is finished: drop everything that could be paid for twice, so Back never returns to the payment page
