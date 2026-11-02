@@ -196,7 +196,9 @@ export async function authenticate({ force = false } = {}) {
   const { TBO_USERNAME, TBO_PASSWORD } = process.env
   if (!TBO_USERNAME || !TBO_PASSWORD) throw new TboError('Flight booking is not configured (TBO login missing).', { status: 503 })
   const json = await post(URLS.auth, 'Authenticate', {
-    ClientId: process.env.TBO_CLIENT_ID || (IS_LIVE ? 'tboprod' : 'ApiIntegrationNew'), // TBO: 'tboprod' for production, 'ApiIntegrationNew' for the test system
+    // TBO: 'tboprod' for production, 'ApiIntegrationNew' for the test system. The test system never accepts the production id, so it is
+    // tied to the mode: a half-switched setup can no longer send one to the other.
+    ClientId: IS_LIVE ? process.env.TBO_CLIENT_ID || 'tboprod' : 'ApiIntegrationNew',
     UserName: TBO_USERNAME,
     Password: TBO_PASSWORD,
     EndUserIp: END_USER_IP,
