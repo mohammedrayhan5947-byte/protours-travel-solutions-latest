@@ -18,6 +18,9 @@ const yes = process.argv.includes('--yes')
 const read = (n) => (fs.existsSync(file(n)) ? fs.readFileSync(file(n), 'utf8') : null)
 const parse = (text) => Object.fromEntries((text || '').split(/\r?\n/).map((l) => /^([A-Z0-9_]+)=(.*)$/.exec(l)).filter(Boolean).map((m) => [m[1], m[2].replace(/^["']|["']$/g, '')]))
 
+/** Values with # or $ must be quoted, or the .env reader cuts them short. */
+const q = (v) => (/[#$\s]/.test(v) ? `'${v}'` : v)
+
 /** Same file, same order and comments, with the given keys replaced (or added at the end). */
 function withValues(text, values) {
   const nl = text.includes('\r\n') ? '\r\n' : '\n'
@@ -25,11 +28,11 @@ function withValues(text, values) {
   const seen = new Set()
   const out = lines.map((l) => {
     const m = /^([A-Z0-9_]+)=/.exec(l)
-    if (m && m[1] in values) { seen.add(m[1]); return `${m[1]}=${values[m[1]]}` }
+    if (m && m[1] in values) { seen.add(m[1]); return `${m[1]}=${q(values[m[1]])}` }
     return l
   })
   while (out.length && out.at(-1).trim() === '') out.pop()
-  for (const [k, v] of Object.entries(values)) if (!seen.has(k)) out.push(`${k}=${v}`)
+  for (const [k, v] of Object.entries(values)) if (!seen.has(k)) out.push(`${k}=${q(v)}`)
   return out.join(nl) + nl
 }
 
