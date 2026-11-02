@@ -342,7 +342,7 @@ export default function Results({ found, form, picked, setPicked, busy, searchin
       <div className="grid gap-5 lg:grid-cols-[17rem_1fr]">
         <aside>
           <button type="button" className="btn btn-ghost mb-3 w-full lg:hidden" onClick={() => setShowFilters((s) => !s)}>{showFilters ? <X size={16} /> : <Filter size={16} />} {showFilters ? 'Hide filters' : `Filters${active ? ` (${active})` : ''}`}</button>
-          <div className={`${showFilters ? 'block' : 'hidden'} lg:sticky lg:top-24 lg:block`}>
+          <div className={`${showFilters ? 'block' : 'hidden'} lg:sticky lg:top-24 lg:block lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto lg:rounded-2xl lg:pr-1 [scrollbar-width:thin]`}>
             <Filters f={filters} setF={setFilters} facets={facets} active={active} onReset={() => setFilters(EMPTY)} />
           </div>
         </aside>

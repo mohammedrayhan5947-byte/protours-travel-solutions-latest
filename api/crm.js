@@ -24,6 +24,9 @@ const bad = (m, s = 400) => Object.assign(new Error(m), { status: s })
 const isLive = () => String(process.env.TBO_ENV).toLowerCase() === 'live'
 const tbo = () => import('./_lib/tbo.js')
 
+// Columns added by later versions of supabase/schema.sql. If the database has not had that file re-run yet, the booking list drops them
+// (see withLegacyFallback) instead of failing, so the CRM never goes blank during an upgrade.
+const NEWER_COLUMNS = ['fare_inr', 'markup_inr', 'paid_inr', 'refunded_inr']
 const BOOKING_LIST = 'id,created_at,updated_at,order_ref,env,status,amount_inr,fare_inr,markup_inr,paid_inr,refunded_inr,customer_name,contact_phone,contact_email,route,journey,travel_date,return_date,pax_count,pnr,booking_ids,assigned_to'
 
 /** One JSON line per sensitive action in the Vercel logs: who did what (never passwords or tokens). */
@@ -69,10 +72,25 @@ function filters(q, kind) {
 }
 
 /** One query for a page of rows plus the total (Prefer: count=exact rides along in the same call). */
+let legacyUntil = 0 // after one "column does not exist", skip the failing query for a minute
+async function withLegacyFallback(select, run) {
+  const older = select.split(',').filter((c) => !NEWER_COLUMNS.includes(c)).join(',')
+  if (older === select) return run(select)
+  if (Date.now() < legacyUntil) return run(older)
+  try {
+    return await run(select)
+  } catch (e) {
+    if (!/does not exist|schema cache|could not find/i.test(String(e.message))) throw e
+    console.error('[crm] database is missing newer columns: re-run supabase/schema.sql. Showing bookings without them.')
+    legacyUntil = Date.now() + 60_000
+    return run(older)
+  }
+}
+
 async function page(table, select, q, kind) {
   const size = Math.min(100, Math.max(1, Number(q.size) || 25))
   const pg = Math.max(1, Number(q.page) || 1)
-  const { rows, count } = await db(`${table}?select=${select}&${filters(q, kind).join('&')}&order=created_at.desc&limit=${size}&offset=${(pg - 1) * size}`, { prefer: 'count=exact' })
+  const { rows, count } = await withLegacyFallback(select, (sel) => db(`${table}?select=${sel}&${filters(q, kind).join('&')}&order=created_at.desc&limit=${size}&offset=${(pg - 1) * size}`, { prefer: 'count=exact' }))
   return { rows: rows || [], total: count ?? (rows || []).length, page: pg, size }
 }
 
@@ -232,7 +250,7 @@ async function exportCsv(q, _b, _r, staff) {
   const kind = q.entity === 'enquiries' ? 'enquiry' : 'booking'
   const table = kind === 'enquiry' ? 'enquiries' : 'flight_bookings'
   const select = kind === 'enquiry' ? '*' : BOOKING_LIST
-  const { rows } = await db(`${table}?select=${select}&${filters(q, kind).join('&')}&order=created_at.desc&limit=5000`)
+  const { rows } = await withLegacyFallback(select, (sel) => db(`${table}?select=${sel}&${filters(q, kind).join('&')}&order=created_at.desc&limit=5000`))
   const list = rows || []
   const cols = list.length ? Object.keys(list[0]) : []
   const csv = [cols.join(','), ...list.map((r) => cols.map((c) => cell(r[c])).join(','))].join('\r\n')
@@ -277,6 +295,11 @@ export default async function handler(req, res) {
     }
     return res.status(200).json(out)
   } catch (e) {
+    // a database function or column from a newer schema.sql that has not been applied yet: say what to do, not a raw SQL error
+    if (e instanceof DbError && /could not find the function|function .* does not exist|column .* does not exist/i.test(e.message)) {
+      console.error('[crm] database is behind the code:', e.message)
+      return res.status(503).json({ error: 'The database needs the latest supabase/schema.sql. Open the Supabase SQL editor, paste that file, and run it once; then this works.' })
+    }
     const status = e.status || 500
     const known = SAFE_ERRORS.has(e?.constructor?.name) || (status < 500 && e.status)
     if (!known) console.error('[crm]', e)
