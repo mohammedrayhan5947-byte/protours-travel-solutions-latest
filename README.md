@@ -228,9 +228,9 @@ the same route, so a second route is what lets you try live without flipping the
 
 Test and live must switch together; the site refuses to take card payments when they disagree (`paymentModeProblem` in `api/_lib/flights.js`).
 
-1. **Relay first.** TBO's live host list is different (search/fare calls on `tboapi.travelboutiqueonline.com`, Book/Ticket/GetBookingDetails on
-   `booking.travelboutiqueonline.com`, login on `api.travelboutiqueonline.com/SharedAPI`). When `TBO_RELAY_URL` is set, the Lightsail relay decides which
-   TBO it calls (its `TBO_*_UPSTREAM` settings), so point those at the live hosts and restart the relay. The relay's IP is the one TBO whitelisted.
+1. **Gateway.** The Lightsail gateway has two routes: `/tbo` (TBO's test system, unchanged) and `/tbo-live` (TBO production: search/fare calls on `tboapi.travelboutiqueonline.com`,
+   Book/Ticket/GetBookingDetails on `booking.travelboutiqueonline.com`, login on `api.travelboutiqueonline.com/SharedAPI`). Both leave from the IP TBO whitelisted. Live is
+   used by pointing `TBO_RELAY_URL`, `TBO_SHARED_URL` and `TBO_AIR_URL` at `/tbo-live` (see `.env.vercel-live`); nothing on the gateway has to be flipped, and going back is just pointing them at `/tbo` again.
 2. **Vercel Production variables:** copy from `.env.vercel-live` (git-ignored): `TBO_ENV=live`, `TBO_CLIENT_ID=tboprod`, the live `TBO_USERNAME` / `TBO_PASSWORD`,
    the live `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` / `RAZORPAY_WEBHOOK_SECRET`, `ALLOW_FAKE_PAYMENTS=false`. Keep the existing relay and Supabase variables. Redeploy.
 3. **Keep local on test:** `.env` / `.env.local` stay on `TBO_ENV=staging` with no Razorpay key, so local testing never spends money.
