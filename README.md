@@ -214,6 +214,16 @@ Set up in the Razorpay dashboard: API Keys (live key id + secret), Settings -> W
 leave capture on **automatic** (manual capture also works because the server captures, but automatic is simpler). Test the webhook with Razorpay's "Send test webhook"
 button, then one real small booking.
 
+## Test or live on your own computer
+
+`npm run env:status` shows which one this computer is using, `npm run env:test` goes back to TBO's test system, and `npm run env:live -- --yes`
+switches to TBO production plus live Razorpay (real tickets, real cards; a red banner shows on the booking page while it is on). It only rewrites
+`.env.local` (git-ignored) and keeps the test file in `.env.local.test`; the live values come from `.env.vercel-live`.
+
+Live traffic from a computer goes through the gateway's **separate `/tbo-live` route** (TBO production hosts), never through `/tbo`, which stays on TBO's
+test system for the public website until Vercel is deliberately switched. The gateway has one setting that decides test or live for everything that uses
+the same route, so a second route is what lets you try live without flipping the website. To add that route to the gateway see `gateway-live-route/` next to this project (patch + steps).
+
 ## Going live (real tickets, real money)
 
 Test and live must switch together; the site refuses to take card payments when they disagree (`paymentModeProblem` in `api/_lib/flights.js`).

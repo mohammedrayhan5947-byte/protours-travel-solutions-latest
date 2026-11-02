@@ -8,7 +8,10 @@
     "dev": "vite --host",
     "build": "vite build && vite build --ssr src/entry-server.jsx && node scripts/prerender.mjs",
     "build:spa": "vite build",
-    "preview": "vite preview --host"
+    "preview": "vite preview --host",
+    "env:status": "node scripts/use-env.mjs status",
+    "env:test": "node scripts/use-env.mjs test",
+    "env:live": "node scripts/use-env.mjs live"
   },
   "dependencies": {
     "@firebase/app": "^0.16.4",

@@ -207,6 +207,9 @@ export default function BookFlights() {
           ) : (
             <h1 className="sr-only">Book flights online</h1>
           )}
+          {status && status.live && import.meta.env.DEV && (
+            <p role="alert" className="mt-4 inline-flex items-center gap-2 rounded-full bg-red-600 px-4 py-1.5 text-[0.88rem] font-bold text-white"><AlertTriangle size={16} /> LIVE MODE on this computer: tickets and card payments here are REAL. Switch back with: npm run env:test</p>
+          )}
           {status && !status.live && status.enabled && (
             <p className="mt-4 inline-flex items-center gap-2 rounded-full bg-gold-500/15 px-4 py-1.5 text-[0.88rem] font-semibold text-gold-400"><AlertTriangle size={16} /> Test mode: bookings here use TBO's test system and are not real tickets. {status.payments === 'test' ? 'Payment is simulated: no card window opens.' : status.payments === 'blocked' ? 'Card payment is switched off here: live Razorpay keys cannot be used with TBO test mode (use Razorpay TEST keys).' : status.payments === 'razorpay' ? 'Payments use Razorpay test mode.' : ''}</p>
           )}
