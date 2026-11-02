@@ -59,8 +59,9 @@ export default function Dashboard({ go, onOpenBooking, onOpenEnquiry }) {
   return (
     <div className="grid gap-5">
       {o.env !== 'live' && <p className="flex items-center gap-2 rounded-xl bg-gold-500/15 px-4 py-2.5 text-[0.9rem] font-semibold text-navy-900"><AlertTriangle size={16} /> Test mode: these are TBO staging bookings, not real tickets.</p>}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <Kpi icon={TrendingUp} label="Revenue today" value={inr(b.revenueToday)} sub={`${inr(b.revenue7)} in 7 days · ${inr(b.revenue30)} in 30 days`} />
+        <Kpi icon={TrendingUp} label="Markup earned" value={inr(b.markupToday)} sub={`${inr(b.markup7)} in 7 days · ${inr(b.markup30)} in 30 days (ticketed)`} tone="text-emerald-800" />
         <Kpi icon={Plane} label="Ticketed (120 days)" value={b.ticketed} sub={`${b.total} booking attempts`} onClick={() => go('bookings')} />
         <Kpi icon={AlertTriangle} label="Needs attention" value={b.attention} tone={b.attention ? 'text-red-700' : 'text-navy-950'} sub="Paid but not ticketed, or failed" onClick={() => go('bookings')} />
         <Kpi icon={CreditCard} label="Awaiting payment" value={b.pending} sub={`${b.abandoned} older than 30 min (likely abandoned)`} onClick={() => go('bookings')} />

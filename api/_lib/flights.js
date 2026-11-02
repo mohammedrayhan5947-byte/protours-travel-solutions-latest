@@ -3,6 +3,7 @@ import { recordCheckout, recordPaymentFailed, recordOutcome, claimTicketing, boo
 import { razorpayConfigured, createOrder, confirmPayment as rzpConfirm, checkoutSignatureOk, paymentModeProblem, PayError } from './pay.js'
 import { air, authenticate, seal, unseal, customerPrice, fakePaymentsAllowed, IS_LIVE, TboError } from './tbo.js'
 import { AIRPORTS } from './airports.js'
+import { getMarkup, priceWith, ruleFor } from './markup.js'
 
 /*
  * The booking flow, one TokenId + TraceId per booking:
@@ -72,7 +73,9 @@ export async function search(input) {
     return air('Search', { tokenId: auth.tokenId }, searchBody)
   })
 
-  const lists = (r.Results || []).map((list) => list.map((x) => ({ ...summarise(x), ...(journey === 'advance' ? { rbd: rbdItem(x) } : {}) })).sort((a, b) => (a.price ?? 1e12) - (b.price ?? 1e12)))
+  // the price shown is the airline's fare plus our markup (set in the CRM), for the whole party
+  const priceCtx = { rule: ruleFor(await getMarkup(), domestic), pax: { adults, children, infants } }
+  const lists = (r.Results || []).map((list) => list.map((x) => ({ ...summarise(x, priceCtx), ...(journey === 'advance' ? { rbd: rbdItem(x) } : {}) })).sort((a, b) => (a.price ?? 1e12) - (b.price ?? 1e12)))
   const session = seal({ tokenId: auth.tokenId, traceId: r.TraceId, journey, domestic, lists: (r.Results || []).length || 1, pax: { adults, children, infants } })
   return {
     session,
@@ -115,6 +118,7 @@ export async function fareRules({ session: token, resultIndex }) {
 export async function calendar(input) {
   const from = up(input.from), to = up(input.to), date = String(input.date || '')
   if (!iataOk(from) || !iataOk(to) || !dateOk(date)) throw bad('Choose airports and a month.')
+  const rule = ruleFor(await getMarkup(), isDomesticCode(from) && isDomesticCode(to))
   const auth = await authenticate()
   const r = await air('GetCalendarFare', { tokenId: auth.tokenId }, {
     JourneyType: '1',
@@ -126,12 +130,12 @@ export async function calendar(input) {
     traceId: r.TraceId,
     days: (r.SearchResults || []).map((d) => ({
       date: d.DepartureDate, airline: d.AirlineName, code: d.AirlineCode, lowest: !!d.IsLowestFare,
-      price: customerPrice((d.BaseFare || 0) + (d.Tax || 0) + (d.OtherCharges || 0) + (d.FuelSurcharge || 0)),
+      price: priceWith((d.BaseFare || 0) + (d.Tax || 0) + (d.OtherCharges || 0) + (d.FuelSurcharge || 0), rule, { adults: 1 }),
     })),
   }
 }
 
-function summarise(x) {
+function summarise(x, ctx) {
   const journeys = (x.Segments || []).map((legs) => {
     const first = legs[0], last = legs[legs.length - 1]
     return {
@@ -172,7 +176,7 @@ function summarise(x) {
     baggage: seg0?.Baggage || '',
     cabinBaggage: seg0?.CabinBaggage || '',
     // Advance search results are unpriced until PriceRBD.
-    price: x.Fare ? customerPrice(x.Fare.PublishedFare) : null,
+    price: x.Fare ? (ctx ? priceWith(x.Fare.PublishedFare, ctx.rule, ctx.pax) : customerPrice(x.Fare.PublishedFare)) : null,
     currency: x.Fare?.Currency || 'INR',
     journeys,
   }
@@ -234,7 +238,8 @@ export async function quote({ session: token, resultIndexes, rbd }) {
   }
 
   const international = !s.domestic
-  const priced = legs.map((l) => ({ ...l, price: customerPrice(l.fare.PublishedFare) }))
+  const rule = ruleFor(await getMarkup(), s.domestic)
+  const priced = legs.map((l) => ({ ...l, price: priceWith(l.fare.PublishedFare, rule, s.pax) }))
   const quoteToken = seal({
     session: { tokenId: s.tokenId, traceId: s.traceId },
     sessionExp: s.exp, // TBO lets a search live 15 minutes: nothing may be paid for after this
@@ -327,6 +332,8 @@ export async function checkout({ quote: token, passengers, contact, gst, choices
   }
 
   const fareTotal = q.legs.reduce((t, l) => t + l.price, 0)
+  const supplierFare = q.legs.reduce((t, l) => t + (Number(l.fare?.PublishedFare) || 0), 0) // what the airline charges
+  const markupInr = Math.max(0, Math.round((fareTotal - supplierFare) * 100) / 100) // what we added
   const amount = fareTotal + Math.ceil(ssrTotal)
   const orderRef = 'PT' + Date.now().toString(36).toUpperCase() + crypto.randomBytes(2).toString('hex').toUpperCase()
 
@@ -348,7 +355,7 @@ export async function checkout({ quote: token, passengers, contact, gst, choices
 
   const checkoutToken = seal({ session: q.session, payloads, amount, orderId: payment.orderId, orderRef, contact: paxList.contact }, ttl)
   await recordCheckout({
-    userId, orderRef, checkoutToken, traceId: q.session.traceId, amount, orderId: payment.orderId, contact: paxList.contact, pax: paxList, journey: q.journey,
+    userId, orderRef, checkoutToken, fareInr: supplierFare, markupInr, traceId: q.session.traceId, amount, orderId: payment.orderId, contact: paxList.contact, pax: paxList, journey: q.journey,
     route: q.legs.map((l) => l.route).filter(Boolean).join(' | '),
     travelDate: q.legs.map((l) => l.depDate).filter(Boolean).sort()[0],
     returnDate: q.legs.length > 1 ? q.legs.at(-1).depDate : q.legs[0]?.lastDepDate !== q.legs[0]?.depDate ? q.legs[0]?.lastDepDate : null,

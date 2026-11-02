@@ -117,6 +117,19 @@ The session lives in the browser tab only. Rotate the secret key if it is ever p
    search and filter, export a CSV, then Settings: wallet balance. Staging data is labelled "Test mode".
 6. Negative checks: open `/crm` signed out (login only), sign in with an account that is not on `CRM_ALLOWED_EMAILS` (refused).
 
+### Price markup (CRM, Settings)
+
+Staff set what is added to the airline's fare, separately for **domestic** and **international** flights, as a **percentage**, a **flat rupee amount**, or both:
+
+`customer pays = airline fare + fare x % + flat x (adults + children)`, rounded up to a whole rupee (`api/_lib/markup.js`).
+
+- The flat amount is per adult and per child, per ticket (a domestic return is two tickets). Infants only carry the percentage.
+- Limits: 0 to 50 % and 0 to Rs 5,000 per traveller; changing it needs a confirmation and is written to the audit log and a 10-entry history in Settings.
+- It is stored in the database and every server instance re-reads it at most once a minute, so a change is live within about a minute. A booking already in checkout keeps the price it was quoted.
+- If the database cannot be reached, the last known setting is used; if there never was one, the old `FLIGHT_MARKUP_PERCENT` environment value (default 0) applies. That variable is now only this fallback.
+- Every booking stores the airline fare and the markup separately (`fare_inr`, `markup_inr`), so earnings add up exactly: the dashboard shows "Markup earned" for today, 7 and 30 days (ticketed bookings), and each booking shows its split.
+- Requires re-running `supabase/schema.sql` (new columns and two settings functions).
+
 ### Running it on the free tiers (Vercel Hobby + Supabase Free)
 
 - **One database trip per action.** Dashboard, booking panel, saves, enquiries and the booking path each call a single

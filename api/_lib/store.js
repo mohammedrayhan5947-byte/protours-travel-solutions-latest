@@ -25,6 +25,8 @@ export const recordCheckout = (b) => safe(() => {
       order_ref: b.orderRef,
       user_id: b.userId || null,
       checkout_token: b.checkoutToken || null,
+      fare_inr: b.fareInr ?? null,
+      markup_inr: b.markupInr ?? null,
       env: IS_LIVE ? 'live' : 'staging',
       trace_id: b.traceId || null,
       amount_inr: b.amount,

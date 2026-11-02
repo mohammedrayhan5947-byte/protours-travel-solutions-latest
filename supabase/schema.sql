@@ -57,6 +57,9 @@ create index if not exists flight_bookings_email on flight_bookings (lower(conta
 alter table flight_bookings add column if not exists checkout_token text;
 alter table flight_bookings add column if not exists paid_inr numeric(12,2);
 alter table flight_bookings add column if not exists refunded_inr numeric(12,2) not null default 0;
+-- the airline's own fare (incl. taxes) and our markup on it, so earnings can be added up exactly
+alter table flight_bookings add column if not exists fare_inr numeric(12,2);
+alter table flight_bookings add column if not exists markup_inr numeric(12,2);
 -- one Razorpay payment can only ever pay for one booking
 create unique index if not exists flight_bookings_payment_unique on flight_bookings (payment_id) where payment_id is not null;
 create index if not exists flight_bookings_rzp_order on flight_bookings (razorpay_order_id) where razorpay_order_id is not null;
@@ -141,13 +144,14 @@ create index if not exists flight_bookings_attention on flight_bookings (created
 create or replace function crm_record_checkout(p jsonb) returns bigint language plpgsql set search_path = public, pg_temp as $$
 declare v_id bigint; v_new boolean;
 begin
-  insert into flight_bookings (order_ref, env, trace_id, status, amount_inr, razorpay_order_id, customer_name, contact_phone, contact_email, journey, route, travel_date, return_date, pax_count, pax, user_id, checkout_token)
+  insert into flight_bookings (order_ref, env, trace_id, status, amount_inr, razorpay_order_id, customer_name, contact_phone, contact_email, journey, route, travel_date, return_date, pax_count, pax, user_id, checkout_token, fare_inr, markup_inr)
   values (p->>'order_ref', p->>'env', p->>'trace_id', 'payment_pending', (p->>'amount_inr')::numeric, p->>'razorpay_order_id', p->>'customer_name', p->>'contact_phone', p->>'contact_email',
-          p->>'journey', p->>'route', nullif(p->>'travel_date', '')::date, nullif(p->>'return_date', '')::date, nullif(p->>'pax_count', '')::int, coalesce(p->'pax', '[]'::jsonb), nullif(p->>'user_id', '')::uuid, nullif(p->>'checkout_token', ''))
+          p->>'journey', p->>'route', nullif(p->>'travel_date', '')::date, nullif(p->>'return_date', '')::date, nullif(p->>'pax_count', '')::int, coalesce(p->'pax', '[]'::jsonb), nullif(p->>'user_id', '')::uuid, nullif(p->>'checkout_token', ''), nullif(p->>'fare_inr', '')::numeric, nullif(p->>'markup_inr', '')::numeric)
   on conflict (order_ref) do update set trace_id = excluded.trace_id, amount_inr = excluded.amount_inr, razorpay_order_id = excluded.razorpay_order_id,
     customer_name = excluded.customer_name, contact_phone = excluded.contact_phone, contact_email = excluded.contact_email, journey = excluded.journey,
     route = excluded.route, travel_date = excluded.travel_date, return_date = excluded.return_date, pax_count = excluded.pax_count, pax = excluded.pax,
-    user_id = coalesce(excluded.user_id, flight_bookings.user_id), checkout_token = coalesce(excluded.checkout_token, flight_bookings.checkout_token)
+    user_id = coalesce(excluded.user_id, flight_bookings.user_id), checkout_token = coalesce(excluded.checkout_token, flight_bookings.checkout_token),
+    fare_inr = excluded.fare_inr, markup_inr = excluded.markup_inr
   returning id, (xmax = 0) into v_id, v_new;
   if v_new then
     insert into crm_events (entity, entity_id, kind, actor, data) values ('booking', v_id, 'created', 'customer', jsonb_build_object('amount', p->'amount_inr', 'route', p->>'route'));
@@ -213,7 +217,7 @@ end $$;
 -- Dashboard: every number in one query, aggregated in the database (no rows shipped to the server).
 create or replace function crm_overview() returns jsonb language sql stable set search_path = public, pg_temp as $$
   with tz as (select (now() at time zone 'Asia/Kolkata')::date as today),
-  b as (select status, amount_inr, created_at, (created_at at time zone 'Asia/Kolkata')::date as day from flight_bookings where created_at >= now() - interval '120 days'),
+  b as (select status, amount_inr, markup_inr, created_at, (created_at at time zone 'Asia/Kolkata')::date as day from flight_bookings where created_at >= now() - interval '120 days'),
   e as (select status, (created_at at time zone 'Asia/Kolkata')::date as day from enquiries where created_at >= now() - interval '120 days'),
   days as (select generate_series((select today from tz) - 13, (select today from tz), interval '1 day')::date as day)
   select jsonb_build_object(
@@ -226,7 +230,10 @@ create or replace function crm_overview() returns jsonb language sql stable set 
         'total', count(*),
         'revenueToday', coalesce(sum(amount_inr) filter (where status = 'ticketed' and day = (select today from tz)), 0),
         'revenue7', coalesce(sum(amount_inr) filter (where status = 'ticketed' and created_at >= now() - interval '7 days'), 0),
-        'revenue30', coalesce(sum(amount_inr) filter (where status = 'ticketed' and created_at >= now() - interval '30 days'), 0)) from b),
+        'revenue30', coalesce(sum(amount_inr) filter (where status = 'ticketed' and created_at >= now() - interval '30 days'), 0),
+        'markupToday', coalesce(sum(markup_inr) filter (where status = 'ticketed' and day = (select today from tz)), 0),
+        'markup7', coalesce(sum(markup_inr) filter (where status = 'ticketed' and created_at >= now() - interval '7 days'), 0),
+        'markup30', coalesce(sum(markup_inr) filter (where status = 'ticketed' and created_at >= now() - interval '30 days'), 0)) from b),
     'enquiries', (select jsonb_build_object(
         'new', count(*) filter (where status = 'new'), 'contacted', count(*) filter (where status = 'contacted'), 'quoted', count(*) filter (where status = 'quoted'),
         'won', count(*) filter (where status = 'won'), 'lost', count(*) filter (where status = 'lost'), 'total', count(*)) from e),
@@ -309,6 +316,16 @@ begin
     insert into crm_events (entity, entity_id, kind, actor, data) values ('booking', v_id, 'failed', 'razorpay', jsonb_build_object('status', 'needs_attention', 'errors', jsonb_build_array(p_reason), 'paymentId', p_payment));
   end if;
 end $$;
+
+-- Settings kept in site_content (key, value): read and written only by the server. Used for the price markup.
+create or replace function crm_get_setting(p_key text) returns jsonb language sql stable set search_path = public, pg_temp as $$
+  select jsonb_build_object('value', value, 'updated_at', updated_at) from site_content where key = p_key
+$$;
+
+create or replace function crm_set_setting(p_key text, p_value jsonb) returns void language sql set search_path = public, pg_temp as $$
+  insert into site_content (key, value, updated_at) values (p_key, p_value, now())
+  on conflict (key) do update set value = excluded.value, updated_at = now()
+$$;
 
 -- Bookings still "awaiting payment" 20 minutes to 3 days after they started: the daily check asks Razorpay whether any were actually paid.
 create or replace function crm_stale_pending(p_limit int) returns jsonb language sql stable set search_path = public, pg_temp as $$
@@ -435,10 +452,10 @@ revoke all on function crm_record_checkout(jsonb), crm_record_paid(text, text), 
   crm_overview(), crm_booking_detail(bigint), crm_apply_update(text, bigint, text, text, boolean, text, text), crm_traces(int, int), crm_cleanup(int, int), set_updated_at(),
   acct_bookings(uuid, text), acct_booking(uuid, text, text),
   crm_claim_ticketing(text, text, numeric), crm_for_order(text), crm_outcome(text), crm_webhook_seen(text, text, text, text), crm_webhook_done(text, text),
-  crm_payment_note(text, text, jsonb), crm_mark_unfulfilled(text, text, numeric, text), crm_booking_for_refund(bigint), crm_record_refund(jsonb), crm_stale_pending(int)
+  crm_payment_note(text, text, jsonb), crm_mark_unfulfilled(text, text, numeric, text), crm_booking_for_refund(bigint), crm_record_refund(jsonb), crm_stale_pending(int), crm_get_setting(text), crm_set_setting(text, jsonb)
   from public, anon, authenticated;
 grant execute on function crm_record_checkout(jsonb), crm_record_paid(text, text), crm_record_payment_failed(text, text), crm_record_outcome(jsonb), crm_add_enquiry(jsonb),
   crm_overview(), crm_booking_detail(bigint), crm_apply_update(text, bigint, text, text, boolean, text, text), crm_traces(int, int), crm_cleanup(int, int),
   acct_bookings(uuid, text), acct_booking(uuid, text, text),
   crm_claim_ticketing(text, text, numeric), crm_for_order(text), crm_outcome(text), crm_webhook_seen(text, text, text, text), crm_webhook_done(text, text),
-  crm_payment_note(text, text, jsonb), crm_mark_unfulfilled(text, text, numeric, text), crm_booking_for_refund(bigint), crm_record_refund(jsonb), crm_stale_pending(int) to service_role;
+  crm_payment_note(text, text, jsonb), crm_mark_unfulfilled(text, text, numeric, text), crm_booking_for_refund(bigint), crm_record_refund(jsonb), crm_stale_pending(int), crm_get_setting(text), crm_set_setting(text, jsonb) to service_role;

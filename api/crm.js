@@ -2,6 +2,7 @@ import { db, rpc, dbConfigured, DbError, clean } from './_lib/db.js'
 import { requireStaff, signIn, refresh, AuthError } from './_lib/auth.js'
 import { PayError, refundPayment, razorpayConfigured } from './_lib/pay.js'
 import { bookingForRefund, recordRefund } from './_lib/store.js'
+import { getMarkup, saveMarkup, LIMITS } from './_lib/markup.js'
 
 /**
  * Back office (CRM) API: flight bookings, website enquiries, the TBO call logs and the TBO wallet.
@@ -23,7 +24,7 @@ const bad = (m, s = 400) => Object.assign(new Error(m), { status: s })
 const isLive = () => String(process.env.TBO_ENV).toLowerCase() === 'live'
 const tbo = () => import('./_lib/tbo.js')
 
-const BOOKING_LIST = 'id,created_at,updated_at,order_ref,env,status,amount_inr,paid_inr,refunded_inr,customer_name,contact_phone,contact_email,route,journey,travel_date,return_date,pax_count,pnr,booking_ids,assigned_to'
+const BOOKING_LIST = 'id,created_at,updated_at,order_ref,env,status,amount_inr,fare_inr,markup_inr,paid_inr,refunded_inr,customer_name,contact_phone,contact_email,route,journey,travel_date,return_date,pax_count,pnr,booking_ids,assigned_to'
 
 /** One JSON line per sensitive action in the Vercel logs: who did what (never passwords or tokens). */
 const audit = (who, action, extra = {}) => console.log(JSON.stringify({ audit: action, by: who, ...extra }))
@@ -82,7 +83,7 @@ async function overview() {
   return {
     env: isLive() ? 'live' : 'staging',
     payments: process.env.RAZORPAY_KEY_ID ? 'razorpay' : !isLive() && String(process.env.ALLOW_FAKE_PAYMENTS).toLowerCase() === 'true' ? 'test mode (no real payment)' : 'off',
-    markupPercent: Math.max(0, Number(process.env.FLIGHT_MARKUP_PERCENT) || 0),
+    markup: await getMarkup(),
     ...o,
   }
 }
@@ -125,6 +126,16 @@ async function update(entity, statuses, body, staff) {
   if (!out?.found) throw bad('Not found', 404)
   audit(staff.email, `${entity}.update`, { id, status: status || undefined, note: Boolean(note) || undefined })
   return { ok: true }
+}
+
+/** The price markup staff can change (Settings): percentage and flat amount, domestic and international. */
+const markup = async () => ({ ...(await getMarkup({ fresh: true })), limits: LIMITS })
+
+async function markupSave(_q, body, _req, staff) {
+  if (body.confirm !== true) throw bad('Confirm the change first.')
+  const saved = await saveMarkup({ domestic: body.domestic, international: body.international }, staff.email) // validates; throws a readable 400
+  audit(staff.email, 'markup.save', { domestic: saved.domestic, international: saved.international })
+  return { ...saved, limits: LIMITS }
 }
 
 /**
@@ -234,13 +245,14 @@ async function exportCsv(q, _b, _r, staff) {
 const PUBLIC = { login, refresh: (_q, body) => refresh(String(body.refreshToken || '')) }
 const READ = {
   me: (_q, _b, _r, staff) => ({ email: staff.email, env: isLive() ? 'live' : 'staging' }),
-  overview, bookings, booking, enquiries, enquiry, traces, trace, balance, live, export: exportCsv,
+  overview, bookings, booking, enquiries, enquiry, traces, trace, balance, live, markup, export: exportCsv,
 }
 const WRITE = {
   bookingUpdate: (_q, b, _r, s) => update('booking', BOOKING_STATUS, b, s),
   enquiryUpdate: (_q, b, _r, s) => update('enquiry', ENQUIRY_STATUS, b, s),
   purge,
   refund,
+  markupSave,
 }
 
 const SAFE_ERRORS = new Set(['DbError', 'AuthError', 'TboError', 'PayError'])
