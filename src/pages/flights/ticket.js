@@ -25,7 +25,7 @@ export function drawTickets(doc, { orderRef, amount, tickets, logo, issuedOn = n
     let y = 12
 
     // letterhead: logo left, address right
-    if (logo) doc.addImage(logo, 'PNG', M, y, 66, 66 * LOGO_RATIO)
+    if (logo) doc.addImage(logo, /^data:image\/jpe?g/.test(logo) ? 'JPEG' : 'PNG', M, y, 66, 66 * LOGO_RATIO, 'logo', 'FAST')
     doc.setTextColor(...NAVY).setFont('helvetica', 'bold').setFontSize(8.5)
     doc.text(TICKET_AGENCY.name, W - M, y + 2, { align: 'right' })
     doc.setFont('helvetica', 'normal').setFontSize(7.8).setTextColor(...GREY)
@@ -105,10 +105,15 @@ export function drawTickets(doc, { orderRef, amount, tickets, logo, issuedOn = n
   return doc
 }
 
+/** The logo, shrunk to what an A4 letterhead needs (about 66 mm wide: 540 px is plenty) and saved as a JPEG: a few KB instead of ~900 KB. */
 async function logoDataUrl() {
   try {
     const blob = await (await fetch('/logo.png')).blob()
-    return await new Promise((res, rej) => { const f = new FileReader(); f.onload = () => res(f.result); f.onerror = rej; f.readAsDataURL(blob) })
+    const bmp = await createImageBitmap(blob)
+    const w = 540, h = Math.round((bmp.height / bmp.width) * w)
+    const c = document.createElement('canvas'); c.width = w; c.height = h
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.imageSmoothingQuality = 'high'; g.drawImage(bmp, 0, 0, w, h)
+    return c.toDataURL('image/jpeg', 0.82)
   } catch { return null } // the ticket is still valid without the logo
 }
 
@@ -116,6 +121,6 @@ export async function downloadTicket(done) {
   const tickets = (done.results || []).filter((r) => r.bookingId && !r.error)
   if (!tickets.length) throw new Error('The ticket is not issued yet.')
   const [{ jsPDF }, logo] = await Promise.all([import('jspdf'), logoDataUrl()])
-  const doc = drawTickets(new jsPDF({ unit: 'mm', format: 'a4' }), { orderRef: done.orderRef, amount: done.amount, tickets, logo })
+  const doc = drawTickets(new jsPDF({ unit: 'mm', format: 'a4', compress: true }), { orderRef: done.orderRef, amount: done.amount, tickets, logo })
   doc.save(`E-ticket-${plain(tickets[0].pnr) || plain(done.orderRef)}.pdf`)
 }
