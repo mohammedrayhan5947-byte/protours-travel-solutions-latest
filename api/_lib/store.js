@@ -88,6 +88,7 @@ export async function claimTicketing(orderRef, paymentId, amount) {
   }
 }
 
+export const recordPayment = (rec) => safe(() => rpc('crm_upsert_payment', { p: rec }))
 export const bookingForOrder = (orderId) => safe(() => rpc('crm_for_order', { p_order: orderId }))
 export const bookingOutcome = (orderRef) => safe(() => rpc('crm_outcome', { p_ref: orderRef }))
 export const webhookSeen = async (eventId, event, paymentId, orderId) => {

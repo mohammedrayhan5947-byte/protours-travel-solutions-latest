@@ -4,6 +4,7 @@ import { Download, Loader2, MessageCircle, Phone, RefreshCw, Search, Mail, Radar
 import { crm, download } from './api.js'
 import { BOOKING_STATUS, Card, Drawer, Empty, Err, Pager, Pill, Timeline, btnDark, btnLight, dayLabel, inr, input, mailTo, waTo, when, whenFull } from './ui.jsx'
 import { Json } from './Logs.jsx'
+import { PaymentTable } from './Payments.jsx'
 
 const STATUSES = Object.keys(BOOKING_STATUS)
 
@@ -155,6 +156,8 @@ export function BookingDrawer({ id, onClose, onChanged }) {
           </Card>
 
           <Card title="Payment"><dl className="grid grid-cols-[8rem_1fr] gap-y-1 text-[0.9rem]"><dt className="text-slate-500">Airline fare / markup</dt><dd>{b.fare_inr != null ? `${inr(b.fare_inr)} + ${inr(b.markup_inr || 0)} markup` : '—'}</dd><dt className="text-slate-500">Paid / refunded</dt><dd>{b.paid_inr != null ? inr(b.paid_inr) : '—'} / {inr(b.refunded_inr || 0)}</dd><dt className="text-slate-500">Payment id</dt><dd className="font-mono break-all">{b.payment_id || '—'}</dd><dt className="text-slate-500">Razorpay order</dt><dd className="font-mono break-all">{b.razorpay_order_id || '—'}</dd><dt className="text-slate-500">TBO trace</dt><dd className="font-mono break-all">{b.trace_id || '—'}</dd></dl></Card>
+
+          <Card title="Payment attempts" right={<span className="text-[0.78rem] text-slate-500">Started {whenFull(b.created_at)}</span>}><PaymentTable rows={d.payments} /></Card>
 
           <RefundPanel b={b} onDone={async () => { await load(); onChanged?.() }} />
 

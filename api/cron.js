@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import { rpc, dbConfigured } from './_lib/db.js'
-import { razorpayConfigured, rzp } from './_lib/pay.js'
-import { markUnfulfilled } from './_lib/store.js'
+import { razorpayConfigured, rzp, paymentRecord } from './_lib/pay.js'
+import { markUnfulfilled, recordPayment } from './_lib/store.js'
 
 /**
  * Daily housekeeping, run by Vercel Cron (see vercel.json; the free plan allows one run per day).
@@ -44,6 +44,7 @@ async function reconcile() {
   for (const b of list || []) {
     try {
       const o = await rzp(`orders/${encodeURIComponent(b.razorpay_order_id)}/payments`)
+      for (const it of o.items || []) await recordPayment(paymentRecord(it, 'daily-check'))
       const paid = (o.items || []).find((p) => ['captured', 'authorized'].includes(p.status) && p.amount === Math.round(Number(b.amount_inr) * 100))
       if (paid) {
         await markUnfulfilled(b.razorpay_order_id, paid.id, b.amount_inr, 'paid, but the booking was never completed (found by the daily payment check)')

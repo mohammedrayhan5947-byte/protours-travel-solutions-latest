@@ -77,12 +77,13 @@ export const webhookSignatureOk = (rawBody, signature, secret = process.env.RAZO
  * Asks Razorpay about a payment and insists it is a real, full, captured payment for THIS order.
  * Capturing is done here when the account is set to manual capture, so a ticket is never bought on money that is not ours yet.
  */
-export async function confirmPayment({ orderId, paymentId, amountInr }) {
+export async function confirmPayment({ orderId, paymentId, amountInr, record }) {
   const wantPaise = Math.round(Number(amountInr) * 100)
   if (!orderId || !paymentId || !/^pay_[A-Za-z0-9]+$/.test(String(paymentId)) || !Number.isInteger(wantPaise) || wantPaise < 100) throw new PayError('Payment could not be verified.', 402)
   let pay = await rzp(`payments/${encodeURIComponent(paymentId)}`)
-  if (pay.order_id !== orderId) throw new PayError('This payment belongs to a different booking.', 402)
-  if (pay.currency !== 'INR' || pay.amount !== wantPaise) throw new PayError('The payment amount does not match this booking.', 402)
+  const note = (source) => record?.(paymentRecord(pay, source)) // every look at the payment is written to the ledger, even one we then refuse
+  if (pay.order_id !== orderId) { await note('browser'); throw new PayError('This payment belongs to a different booking.', 402) }
+  if (pay.currency !== 'INR' || pay.amount !== wantPaise) { await note('browser'); throw new PayError('The payment amount does not match this booking.', 402) }
   if (pay.status === 'authorized') {
     try {
       pay = await rzp(`payments/${encodeURIComponent(paymentId)}/capture`, { method: 'POST', body: { amount: wantPaise, currency: 'INR' } })
@@ -91,6 +92,7 @@ export async function confirmPayment({ orderId, paymentId, amountInr }) {
       pay = await rzp(`payments/${encodeURIComponent(paymentId)}`).catch(() => { throw e })
     }
   }
+  await note('browser')
   if (pay.status !== 'captured') throw new PayError('Payment is not complete for this booking.', 402)
   return { paymentId: pay.id, amountPaise: pay.amount, method: pay.method }
 }
@@ -107,4 +109,22 @@ export async function refundPayment({ paymentId, amountPaise, receipt, notes, id
     headers: idempotencyKey ? { 'X-Refund-Idempotency': String(idempotencyKey).slice(0, 80) } : {},
     body: { amount: amountPaise, speed: 'normal', receipt: String(receipt || '').slice(0, 40) || undefined, notes: notes || {} },
   })
+}
+
+const toIso = (unix) => (unix ? new Date(Number(unix) * 1000).toISOString() : null)
+const rupees = (paise) => (paise === undefined || paise === null ? null : Number(paise) / 100)
+
+/** A Razorpay payment (from their API or a webhook) as one ledger row. No card number exists in it, only network, type and last 4. */
+export function paymentRecord(pay, source, eventAt) {
+  const a = pay.acquirer_data || {}
+  return {
+    payment_id: pay.id, order_id: pay.order_id || null, status: pay.status, method: pay.method || null,
+    amount_inr: rupees(pay.amount), currency: pay.currency || null,
+    vpa: pay.vpa || null, upi_ref: a.upi_transaction_id || null, bank_ref: a.rrn || a.bank_transaction_id || a.auth_code || null,
+    card_network: pay.card?.network || null, card_type: pay.card?.type || null, card_last4: pay.card?.last4 || null, card_issuer: pay.card?.issuer || null,
+    bank: pay.bank || null, wallet: pay.wallet || null, email: pay.email || null, contact: pay.contact || null,
+    fee_inr: rupees(pay.fee), tax_inr: rupees(pay.tax),
+    error_code: pay.error_code || null, error_description: pay.error_description || null, error_reason: pay.error_reason || null, error_step: pay.error_step || null,
+    initiated_at: toIso(pay.created_at), event_at: eventAt ? toIso(eventAt) : null, source,
+  }
 }

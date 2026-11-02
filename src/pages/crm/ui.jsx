@@ -25,6 +25,14 @@ export const BOOKING_STATUS = {
   cancelled: ['Cancelled', 'bg-slate-200 text-slate-700'],
   refunded: ['Refunded', 'bg-violet-100 text-violet-900'],
 }
+export const PAYMENT_STATUS = {
+  created: ['Started', 'bg-slate-100 text-slate-700'],
+  authorized: ['Authorised', 'bg-sky-100 text-sky-900'],
+  captured: ['Captured', 'bg-emerald-100 text-emerald-900'],
+  failed: ['Failed', 'bg-red-100 text-red-800'],
+  partially_refunded: ['Part refunded', 'bg-violet-100 text-violet-900'],
+  refunded: ['Refunded', 'bg-violet-100 text-violet-900'],
+}
 export const ENQUIRY_STATUS = {
   new: ['New', 'bg-sky-100 text-sky-900'],
   contacted: ['Contacted', 'bg-amber-100 text-amber-900'],
@@ -97,6 +105,7 @@ export function Timeline({ events }) {
       case 'payment_failed': return `Payment not completed: ${d.message || ''}`
       case 'ticketed': return `Ticketed. PNR ${d.pnr || ''}`
       case 'failed': return `Ticketing problem${d.pnr ? ' (PNR ' + d.pnr + ')' : ''}: ${(d.errors || []).join('; ') || d.status || ''}`
+      case 'payment': return `Payment ${d.paymentId || ''}: ${d.status}${d.method ? ' by ' + String(d.method).toUpperCase() : ''}${d.vpa ? ' (' + d.vpa + ')' : ''}${d.amount ? ', ' + inr(d.amount) : ''}${d.error ? ': ' + d.error : ''}`
       case 'refund': return `Refunded ${inr(d.amount)} to the customer's card${d.reason ? ': ' + d.reason : ''}${d.status && d.status !== 'processed' ? ` (${d.status})` : ''}`
       case 'status': return `Status changed: ${d.from} → ${d.to}`
       case 'assigned': return d.to ? `Assigned to ${d.to}` : 'Unassigned'

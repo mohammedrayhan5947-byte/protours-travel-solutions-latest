@@ -2,7 +2,8 @@ import crypto from 'node:crypto'
 import { waitUntil } from '@vercel/functions'
 import { fulfilPaidOrder } from './_lib/flights.js'
 import { webhookSignatureOk } from './_lib/pay.js'
-import { paymentNote, recordRefund, webhookDone, webhookSeen } from './_lib/store.js'
+import { paymentRecord } from './_lib/pay.js'
+import { paymentNote, recordPayment, recordRefund, webhookDone, webhookSeen } from './_lib/store.js'
 import { flushLogs } from './_lib/tbo.js'
 
 /**
@@ -38,6 +39,8 @@ async function readRaw(req) {
 
 async function handle(event, body) {
   const pay = body.payload?.payment?.entity
+  // every payment event goes into the ledger first (method, UPI id, status, times), whatever else happens
+  if (pay?.id && event.startsWith('payment.')) await recordPayment(paymentRecord(pay, 'webhook', body.created_at))
   const ord = body.payload?.order?.entity
   const rf = body.payload?.refund?.entity
   switch (event) {

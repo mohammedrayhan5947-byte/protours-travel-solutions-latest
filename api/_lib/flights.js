@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { recordCheckout, recordPaymentFailed, recordOutcome, claimTicketing, bookingOutcome, bookingForOrder, markUnfulfilled, paymentNote } from './store.js'
+import { recordCheckout, recordPaymentFailed, recordOutcome, claimTicketing, recordPayment, bookingOutcome, bookingForOrder, markUnfulfilled, paymentNote } from './store.js'
 import { razorpayConfigured, createOrder, confirmPayment as rzpConfirm, checkoutSignatureOk, paymentModeProblem, PayError } from './pay.js'
 import { air, authenticate, seal, unseal, customerPrice, fakePaymentsAllowed, IS_LIVE, TboError } from './tbo.js'
 import { AIRPORTS } from './airports.js'
@@ -613,7 +613,7 @@ async function verifyPayment(c, p) {
   }
   if (!p?.paymentId || p.orderId !== c.orderId || !checkoutSignatureOk(c.orderId, p.paymentId, p.signature)) throw new TboError('Payment could not be verified.', { status: 402 })
   try {
-    return await rzpConfirm({ orderId: c.orderId, paymentId: p.paymentId, amountInr: c.amount })
+    return await rzpConfirm({ orderId: c.orderId, paymentId: p.paymentId, amountInr: c.amount, record: recordPayment })
   } catch (e) {
     if (e instanceof PayError) throw new TboError(e.message, { status: e.status })
     throw e
@@ -624,7 +624,7 @@ async function verifyPayment(c, p) {
 async function lateTicket(c, payment) {
   if (payment?.paymentId && !String(c.orderId).startsWith('test_')) {
     try {
-      const paid = await rzpConfirm({ orderId: c.orderId, paymentId: payment.paymentId, amountInr: c.amount })
+      const paid = await rzpConfirm({ orderId: c.orderId, paymentId: payment.paymentId, amountInr: c.amount, record: recordPayment })
       await markUnfulfilled(c.orderId, paid.paymentId, c.amount, 'paid after the fare hold expired')
     } catch { /* not a real payment: nothing to put right */ }
   }
@@ -663,7 +663,7 @@ export async function fulfilPaidOrder({ orderId, paymentId, graceMs = Number(pro
   const amount = Number(row.amount_inr)
   let paid
   try {
-    paid = await rzpConfirm({ orderId, paymentId, amountInr: amount })
+    paid = await rzpConfirm({ orderId, paymentId, amountInr: amount, record: recordPayment })
   } catch (e) {
     await paymentNote(orderId, 'payment_failed', { message: e.message })
     return `payment not valid: ${e.message}`

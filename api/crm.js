@@ -106,6 +106,24 @@ async function overview() {
   }
 }
 
+const PAYMENT_STATUS = ['created', 'authorized', 'captured', 'failed', 'partially_refunded', 'refunded']
+const PAYMENT_METHOD = ['upi', 'card', 'netbanking', 'wallet', 'emi', 'paylater']
+function paymentFilters(q) {
+  const f = []
+  if (PAYMENT_STATUS.includes(q.status)) f.push(`status=eq.${q.status}`)
+  if (PAYMENT_METHOD.includes(q.method)) f.push(`method=eq.${q.method}`)
+  const s = clean(q.q)
+  if (s) f.push(`or=(${['payment_id', 'order_id', 'order_ref', 'vpa', 'upi_ref', 'bank_ref', 'contact', 'email'].map((c) => `${c}.ilike.*${encodeURIComponent(s)}*`).join(',')})`)
+  if (DATE.test(q.from || '')) f.push(`initiated_at=gte.${q.from}T00:00:00%2B05:30`)
+  if (DATE.test(q.to || '')) f.push(`initiated_at=lte.${q.to}T23:59:59%2B05:30`)
+  return f
+}
+async function payments(q) {
+  const size = Math.min(100, Math.max(1, Number(q.size) || 25)), pg = Math.max(1, Number(q.page) || 1)
+  const { rows, count } = await db(`payments?select=*&${paymentFilters(q).join('&')}&order=initiated_at.desc.nullslast&limit=${size}&offset=${(pg - 1) * size}`, { prefer: 'count=exact' })
+  return { rows: rows || [], total: count ?? (rows || []).length, page: pg, size }
+}
+
 const bookings = (q) => page('flight_bookings', BOOKING_LIST, q, 'booking')
 const enquiries = (q) => page('enquiries', '*', q, 'enquiry')
 
@@ -247,10 +265,10 @@ const cell = (v) => {
 }
 
 async function exportCsv(q, _b, _r, staff) {
-  const kind = q.entity === 'enquiries' ? 'enquiry' : 'booking'
-  const table = kind === 'enquiry' ? 'enquiries' : 'flight_bookings'
-  const select = kind === 'enquiry' ? '*' : BOOKING_LIST
-  const { rows } = await withLegacyFallback(select, (sel) => db(`${table}?select=${sel}&${filters(q, kind).join('&')}&order=created_at.desc&limit=5000`))
+  const kind = q.entity === 'enquiries' ? 'enquiry' : q.entity === 'payments' ? 'payment' : 'booking'
+  const table = kind === 'enquiry' ? 'enquiries' : kind === 'payment' ? 'payments' : 'flight_bookings'
+  const select = kind === 'enquiry' || kind === 'payment' ? '*' : BOOKING_LIST
+  const { rows } = kind === 'payment' ? await db(`payments?select=*&${paymentFilters(q).join('&')}&order=initiated_at.desc.nullslast&limit=5000`) : await withLegacyFallback(select, (sel) => db(`${table}?select=${sel}&${filters(q, kind).join('&')}&order=created_at.desc&limit=5000`))
   const list = rows || []
   const cols = list.length ? Object.keys(list[0]) : []
   const csv = [cols.join(','), ...list.map((r) => cols.map((c) => cell(r[c])).join(','))].join('\r\n')
@@ -263,7 +281,7 @@ async function exportCsv(q, _b, _r, staff) {
 const PUBLIC = { login, refresh: (_q, body) => refresh(String(body.refreshToken || '')) }
 const READ = {
   me: (_q, _b, _r, staff) => ({ email: staff.email, env: isLive() ? 'live' : 'staging' }),
-  overview, bookings, booking, enquiries, enquiry, traces, trace, balance, live, markup, export: exportCsv,
+  overview, bookings, booking, payments, enquiries, enquiry, traces, trace, balance, live, markup, export: exportCsv,
 }
 const WRITE = {
   bookingUpdate: (_q, b, _r, s) => update('booking', BOOKING_STATUS, b, s),
