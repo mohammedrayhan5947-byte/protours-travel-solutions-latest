@@ -181,8 +181,9 @@ export function useSeen() {
 const shortWindow = (x) => (x.to == null ? `Over ${hoursLabel(x.from)} before` : x.from ? `${hoursLabel(x.from)} – ${hoursLabel(x.to)} before` : `Within ${hoursLabel(x.to)}`)
 
 /** The two fee lists, always visible on the card: what the airline charges to cancel or to change the date. */
-export function FeeSummary({ session, fare }) {
-  const [ref, seen] = useSeen()
+export function FeeSummary({ session, fare, eager = false }) {
+  const [ref, seenNow] = useSeen()
+  const seen = eager || seenNow
   const { state, rules } = useFees(session, fare.resultIndex, seen)
   const mini = rules[0]?.mini?.Rules
   return (

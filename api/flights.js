@@ -1,5 +1,6 @@
 import { search, quote, checkout, ticket, calendar, fareRules } from './_lib/flights.js'
-import { TboError, IS_LIVE, flushLogs, withEndUserIp } from './_lib/tbo.js'
+import { TboError, IS_LIVE, flushLogs, withEndUserIp, fakePaymentsAllowed } from './_lib/tbo.js'
+import { razorpayConfigured, paymentModeProblem } from './_lib/pay.js'
 import { optionalUser } from './_lib/customer.js'
 
 /**
@@ -37,7 +38,9 @@ export default function handler(req, res) {
 async function run(req, res) {
   if (req.method === 'GET') {
     // Lets the page know whether online flight booking is switched on here.
-    return res.status(200).json({ enabled: flightsEnabled(), live: IS_LIVE })
+    // `payments` only tells a TEST site how payment will behave (so a developer is not left wondering why no card window opens)
+    const payments = razorpayConfigured() ? (paymentModeProblem(process.env.RAZORPAY_KEY_ID, IS_LIVE) ? 'blocked' : 'razorpay') : fakePaymentsAllowed() ? 'test' : 'off'
+    return res.status(200).json({ enabled: flightsEnabled(), live: IS_LIVE, ...(IS_LIVE ? {} : { payments }) })
   }
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'GET, POST')
