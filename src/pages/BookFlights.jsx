@@ -32,18 +32,12 @@ function payDescription(q) {
 
 /* How the Razorpay window looks: our name, logo and colours, the trip in plain words, and UPI first. */
 const PAY_LOOK = {
-  theme: { color: '#0a3560', backdrop_color: 'rgba(4, 24, 44, 0.82)' },
+  theme: { color: '#0f5e9e', backdrop_color: 'rgba(4, 24, 44, 0.72)' },
   config: {
     display: {
-      blocks: {
-        upi: { name: 'Pay with UPI', instruments: [{ method: 'upi' }] },
-        card: { name: 'Pay with card', instruments: [{ method: 'card' }] },
-        netbanking: { name: 'Pay with net banking', instruments: [{ method: 'netbanking' }] },
-        wallet: { name: 'Pay with a wallet', instruments: [{ method: 'wallet' }] },
-        paylater: { name: 'Pay later', instruments: [{ method: 'paylater' }] },
-      },
-      sequence: ['block.upi', 'block.card', 'block.netbanking', 'block.wallet', 'block.paylater'],
-      preferences: { show_default_blocks: false }, // only our ordered list, no second copy of the same methods (methods your account has not enabled are hidden by Razorpay)
+      blocks: { upi: { name: 'UPI', instruments: [{ method: 'upi' }] }, card: { name: 'Cards', instruments: [{ method: 'card' }] }, netbanking: { name: 'Net banking', instruments: [{ method: 'netbanking' }] } },
+      sequence: ['block.upi', 'block.card', 'block.netbanking'],
+      preferences: { show_default_blocks: false },
     },
   },
 }

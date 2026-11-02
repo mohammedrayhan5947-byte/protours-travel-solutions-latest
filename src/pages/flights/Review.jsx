@@ -88,15 +88,19 @@ function FareRules({ legs }) {
   return (
     <div className="mt-4 rounded-xl border border-slate-200">
       <button type="button" className="flex w-full items-center justify-between gap-2 px-4 py-3 text-left font-bold text-ink" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-        Cancellation, date change and fare rules {open ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+        Full fare rules {open ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
       </button>
-      {legs.some((l) => (l.rules || []).some((r) => r.mini?.Rules?.length)) && (
-        <div className="px-4 pb-3">
-          {legs.flatMap((l, li) => (l.rules || []).map((r, ri) => (
-            <div key={`${li}-${ri}`}><p className="text-[0.8rem] font-semibold text-slate-500">{r.origin} → {r.destination}</p><PenaltyBar rules={r.mini?.Rules} type={FEE_TYPE.cancel} title="Cancellation fee" /><PenaltyBar rules={r.mini?.Rules} type={FEE_TYPE.change} title="Date change fee" /></div>
-          )))}
-        </div>
-      )}
+      <div className="px-4 pb-4">
+        <p className="text-[0.95rem] font-bold text-ink">Cancellation &amp; date-change fees</p>
+        {legs.some((l) => (l.rules || []).some((r) => r.mini?.Rules?.length)) ? (
+          <>
+            {legs.flatMap((l, li) => (l.rules || []).filter((r) => r.mini?.Rules?.length).map((r, ri) => (
+              <div key={`${li}-${ri}`} className="mt-2 rounded-xl bg-sand/60 p-3"><p className="text-[0.8rem] font-semibold text-slate-600">{r.origin} → {r.destination}</p><PenaltyBar rules={r.mini.Rules} type={FEE_TYPE.cancel} title="Cancellation fee" /><PenaltyBar rules={r.mini.Rules} type={FEE_TYPE.change} title="Date change fee" /></div>
+            )))}
+            <p className="mt-2 text-[0.78rem] text-slate-500">Airline fee per traveller; our service fee is extra.</p>
+          </>
+        ) : <p className="mt-1 text-[0.85rem] text-slate-600">The airline has not published these fees for this fare. Our team confirms them with you before ticketing.</p>}
+      </div>
       {open && (
         <div className="max-h-80 overflow-auto border-t border-slate-200 bg-sand/60 p-4 text-[0.85rem]">
           {!rules.length && <p>The airline's fare rules were not returned for this fare. Our team will confirm them with you before ticketing.</p>}
@@ -296,7 +300,7 @@ export default function Review({ q, searchedAt, onBack, onPay, busy }) {
           <FareRules legs={q.legs} />
         </Section>
 
-        <Section n="2" title="Traveller details" right={<span className="text-[0.8rem] font-semibold text-slate-500">{pax.length} traveller{pax.length > 1 ? 's' : ''}</span>}>
+        <Section n="2" title="Traveller details" right={<span className="text-[0.8rem] font-semibold text-slate-500">{pax.length} traveller{pax.length > 1 ? 's' : ''} · <span className="text-red-600">*</span> mandatory</span>}>
           <p className="mb-4 rounded-lg bg-sand px-3 py-2 text-[0.85rem] text-slate-700">Enter names <strong>exactly as on the {intl ? 'passport' : 'government photo ID'}</strong>, letters only. Name changes after booking are not allowed by most airlines.</p>
           <div className="grid gap-4">
             {pax.map((p, i) => (

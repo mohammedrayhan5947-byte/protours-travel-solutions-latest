@@ -417,3 +417,7 @@
 .animate-fly { animation: fly-across 2.2s ease-in-out infinite alternate; }
 .animate-drift { animation: drift 5s ease-in-out infinite alternate; }
 @media (prefers-reduced-motion: reduce) { .animate-fly, .animate-drift { animation: none; } }
+
+/* Mandatory fields in the booking form get a red star after their label */
+#review-form label:has(+ [required])::after,
+#review-form label:has(+ div > [required])::after { content: ' *'; color: #dc2626; font-weight: 700; }

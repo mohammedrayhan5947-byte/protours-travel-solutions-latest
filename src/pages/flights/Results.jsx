@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ArrowRight, BadgeCheck, Check, ChevronDown, ChevronUp, Filter, Loader2, Luggage, Pencil, Plane, RotateCcw, Users, X } from 'lucide-react'
 
 import SearchWidget, { useMonthFares } from './Search.jsx'
-import { addDays, AirlineMark, bucketOf, cityOf, dateLabel, dayMonth, dur, inr, minutesBetween, FeeSummary, time, TIME_BUCKETS, todayIso, weekday } from './shared.jsx'
+import { addDays, AirlineMark, bucketOf, cityOf, dateLabel, dayMonth, dur, inr, minutesBetween, time, TIME_BUCKETS, todayIso, weekday } from './shared.jsx'
 
 /* Results: modify-search bar, ±3-day fare strip, filters, sort tabs, expandable flight cards
    and a sticky "book" bar for round trips. All filtering/sorting happens in the browser on the
@@ -230,52 +230,7 @@ function FlightCard({ session, r, fares, picked, selected, onSelect, single, bad
 
 /* ---------------- the page ---------------- */
 
-/**
- * "Book now" does not go straight on: the customer first sees the airline's cancellation and date-change fees for the fare(s) they
- * picked, so nobody is surprised later. Continue buys nothing yet; it just fetches the final price and opens the review page.
- */
-function FeesDialog({ picks, session, busy, onContinue, onCancel }) {
-  const ref = useRef(null)
-  const [started, setStarted] = useState(false)
-  useEffect(() => { ref.current?.focus() }, [])
-  useEffect(() => {
-    const k = (e) => { if (e.key === 'Escape' && !busy) onCancel() }
-    document.addEventListener('keydown', k)
-    const prev = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => { document.removeEventListener('keydown', k); document.body.style.overflow = prev }
-  }, [busy, onCancel])
-  // the fare could not be confirmed (an error banner is shown on the page): put the dialog away
-  useEffect(() => { if (started && !busy) onCancel() }, [started, busy, onCancel])
-  const total = picks.reduce((t, p) => t + (p.price || 0), 0)
-  return (
-    <div className="fixed inset-0 z-[60] grid place-items-end bg-navy-950/70 p-0 sm:place-items-center sm:p-4" onMouseDown={(e) => e.target === e.currentTarget && !busy && onCancel()}>
-      <div role="dialog" aria-modal="true" aria-labelledby="fees-title" className="max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-3xl sm:p-6">
-        <h2 id="fees-title" className="font-display text-[1.25rem] font-bold text-ink">Before you book: cancellation &amp; date-change fees</h2>
-        <p className="mt-1 text-[0.88rem] text-slate-600">These are the airline's charges if you cancel or change the date of this ticket.</p>
-        <div className="mt-4 grid gap-4">
-          {picks.map((p) => (
-            <div key={p.resultIndex}>
-              <p className="font-semibold text-ink">{p.journeys[0].from} → {p.journeys.at(-1).to} <span className="font-normal text-slate-600">· {dateLabel(p.journeys[0].dep)} · {p.airline} {p.journeys.flatMap((j) => j.flights).map((g) => `${g.code}-${g.number}`).join(' + ')} · {inr(p.price)}</span></p>
-              <FeeSummary session={session} fare={p} eager />
-            </div>
-          ))}
-        </div>
-        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <button type="button" className="btn btn-ghost px-5 py-2.5" disabled={busy} onClick={onCancel}>Back to flights</button>
-          <button ref={ref} type="button" className="btn btn-gold px-6 py-2.5" disabled={busy} onClick={() => { setStarted(true); onContinue() }}>
-            {busy ? <><Loader2 className="animate-spin" size={17} /> Checking the fare…</> : <>Continue to book {picks.length > 1 ? `· ${inr(total)}` : ''}</>}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-export default function Results({ found, form, picked, setPicked, busy, searching, onBook: bookNow, onSearchAgain }) {
-  const [feePicks, setFeePicks] = useState(null) // the fare(s) whose fees are being shown before booking
-  const onBook = (picks) => setFeePicks(picks)
-  const closeFees = useCallback(() => setFeePicks(null), [])
+export default function Results({ found, form, picked, setPicked, busy, searching, onBook, onSearchAgain }) {
   const [filters, setFilters] = useState(EMPTY)
   const [sort, setSort] = useState('best')
   const [showFilters, setShowFilters] = useState(false)
@@ -388,8 +343,6 @@ export default function Results({ found, form, picked, setPicked, busy, searchin
           </div>
         </div>
       </div>
-
-      {feePicks && <FeesDialog picks={feePicks} session={found.session} busy={busy} onContinue={() => bookNow(feePicks)} onCancel={closeFees} />}
 
       {!single && (
         <div className="sticky bottom-3 z-20 mt-6 rounded-2xl bg-navy-950 p-3 text-white shadow-2xl md:p-4">
