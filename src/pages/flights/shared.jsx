@@ -4,11 +4,19 @@ import { Check, Loader2 } from 'lucide-react'
 import { accountToken } from '../account/session.js'
 import { LOGOS } from './airlines.js'
 
-import { AIRPORTS } from '../../../api/_lib/airports.js'
+import { AIRPORTS, FEATURED, countryName } from '../../../api/_lib/airports.js'
 
 /* Helpers shared by every step of the flight-booking flow. */
 
-export const AIRPORT_LIST = Object.entries(AIRPORTS).map(([code, a]) => ({ code, ...a }))
+// featured airports first (what shows when the box is empty), then every other airport in the world
+const FEAT = new Set(FEATURED)
+// search keys are lower-case without accents, so "sao paulo" finds "São Paulo"
+export const plain = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+export const AIRPORT_LIST = [...FEATURED, ...Object.keys(AIRPORTS).filter((c) => !FEAT.has(c))].map((code) => {
+  const a = AIRPORTS[code], cn = countryName(code)
+  return { code, ...a, countryName: cn, k: { code: code.toLowerCase(), city: plain(a.city), name: plain(a.name), country: plain(cn) } }
+})
+export const countryOf = (code) => countryName(code)
 export const cityOf = (code) => AIRPORTS[code]?.city || code
 export const airportName = (code) => AIRPORTS[code]?.name || ''
 

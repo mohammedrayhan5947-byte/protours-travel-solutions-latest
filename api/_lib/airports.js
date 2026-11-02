@@ -3,6 +3,8 @@
  * international (TBO FAQ Q23: domestic = both ends in India).
  * Shared with the browser bundle via src/data/airports.js.
  */
+import { WORLD_ALL, COUNTRY_NAMES } from './airports-world.js'
+
 const IN = [
   ['BLR', 'Bengaluru', 'Kempegowda International'], ['DEL', 'Delhi', 'Indira Gandhi International'], ['BOM', 'Mumbai', 'Chhatrapati Shivaji Maharaj International'],
   ['MAA', 'Chennai', 'Chennai International'], ['HYD', 'Hyderabad', 'Rajiv Gandhi International'], ['CCU', 'Kolkata', 'Netaji Subhas Chandra Bose International'],
@@ -43,4 +45,8 @@ const WORLD = [
   ['NBO', 'Nairobi', 'Jomo Kenyatta', 'KE'], ['BAK', 'Baku', 'Heydar Aliyev', 'AZ'], ['TBS', 'Tbilisi', 'Tbilisi', 'GE'], ['ALA', 'Almaty', 'Almaty', 'KZ'],
 ].map(([code, city, name, country]) => [code, { city, name, country }])
 
-export const AIRPORTS = Object.fromEntries([...IN, ...WORLD])
+// every airport in the world with scheduled flights first, then the hand-written entries on top (they win: nicer names, and the home market)
+const ALL = WORLD_ALL.map(([code, city, name, country]) => [code, { city, name, country }])
+export const AIRPORTS = Object.fromEntries([...ALL, ...IN, ...WORLD])
+export const FEATURED = [...IN, ...WORLD].map(([code]) => code) // shown first when the search box is empty
+export const countryName = (code) => COUNTRY_NAMES[AIRPORTS[code]?.country] || ''

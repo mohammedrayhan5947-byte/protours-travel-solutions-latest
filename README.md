@@ -224,6 +224,12 @@ Live traffic from a computer goes through the gateway's **separate `/tbo-live` r
 test system for the public website until Vercel is deliberately switched. The gateway has one setting that decides test or live for everything that uses
 the same route, so a second route is what lets you try live without flipping the website. To add that route to the gateway see `gateway-live-route/` next to this project (patch + steps).
 
+## Airports
+
+The search box offers every airport in the world with scheduled passenger flights (about 4,000), generated from OurAirports (public domain) into
+`api/_lib/airports-world.js`. Hand-written entries in `api/_lib/airports.js` (the home market and popular hubs) sit on top, win on names, and show first
+when the box is empty. Search ignores accents and also matches the country name ("japan"). "Domestic" means both ends are in India, from the airport's country.
+
 ## Going live (real tickets, real money)
 
 Test and live must switch together; the site refuses to take card payments when they disagree (`paymentModeProblem` in `api/_lib/flights.js`).

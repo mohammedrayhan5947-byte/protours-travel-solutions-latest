@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeftRight, CalendarDays, ChevronLeft, ChevronRight, Clock, Loader2, Minus, Plane, Plus, Trash2, Users } from 'lucide-react'
 
-import { AIRPORT_LIST, addDays, airportName, api, cityOf, dayMonth, inr, todayIso, ui, weekday } from './shared.jsx'
+import { AIRPORT_LIST, plain, addDays, airportName, api, cityOf, dayMonth, inr, todayIso, ui, weekday } from './shared.jsx'
 
 /* Search widget: from/to cards with a swap button, a fare calendar, travellers & class,
    popular routes and recent searches. Same payload as before: onSearch(form). */
@@ -44,9 +44,20 @@ function AirportCard({ id, caption, value, onChange, compact }) {
   useOutside(ref, () => setOpen(false))
   useEffect(() => { if (open) setText('') }, [open])
   const matches = useMemo(() => {
-    const t = text.trim().toLowerCase()
+    const t = plain(text.trim())
     if (!t) return AIRPORT_LIST.slice(0, 8)
-    return AIRPORT_LIST.filter((a) => a.code.toLowerCase().startsWith(t) || a.city.toLowerCase().includes(t) || a.name.toLowerCase().includes(t)).slice(0, 8)
+    // best matches first: the code itself, a city that starts with what was typed, then city / airport / country anywhere
+    const score = (a) => {
+      const c = a.k.code, city = a.k.city
+      if (c === t) return 0
+      if (city.startsWith(t)) return 1
+      if (c.startsWith(t)) return 2
+      if (city.includes(t)) return 3
+      if (a.k.name.includes(t)) return 4
+      if (a.k.country.startsWith(t)) return 5
+      return 9
+    }
+    return AIRPORT_LIST.map((a, i) => [score(a), i, a]).filter((x) => x[0] < 9).sort((x, y) => x[0] - y[0] || x[1] - y[1]).slice(0, 8).map((x) => x[2])
   }, [text])
   return (
     <div className="relative" ref={ref}>
@@ -62,7 +73,7 @@ function AirportCard({ id, caption, value, onChange, compact }) {
               <li key={a.code}>
                 <button type="button" className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left hover:bg-sand"
                   onClick={() => { onChange(a.code); setOpen(false) }}>
-                  <span className="min-w-0"><span className="block truncate font-semibold text-ink">{a.city}</span><span className="block truncate text-[0.8rem] text-slate-500">{a.name}</span></span>
+                  <span className="min-w-0"><span className="block truncate font-semibold text-ink">{a.city}</span><span className="block truncate text-[0.8rem] text-slate-500">{a.name}{a.countryName && a.country !== "IN" ? `, ${a.countryName}` : ""}</span></span>
                   <span className="font-mono font-bold text-navy-900">{a.code}</span>
                 </button>
               </li>
