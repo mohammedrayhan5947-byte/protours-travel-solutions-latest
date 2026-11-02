@@ -1,7 +1,9 @@
 import crypto from 'node:crypto'
-import { recordBooking } from './store.js'
+import { recordCheckout, recordPaymentFailed, recordOutcome, claimTicketing, recordPayment, bookingOutcome, bookingForOrder, markUnfulfilled, paymentNote } from './store.js'
+import { razorpayConfigured, createOrder, confirmPayment as rzpConfirm, checkoutSignatureOk, paymentModeProblem, PayError } from './pay.js'
 import { air, authenticate, seal, unseal, customerPrice, fakePaymentsAllowed, IS_LIVE, TboError } from './tbo.js'
 import { AIRPORTS } from './airports.js'
+import { getMarkup, priceWith, ruleFor } from './markup.js'
 
 /*
  * The booking flow, one TokenId + TraceId per booking:
@@ -41,6 +43,7 @@ export async function search(input) {
     if (s.from === s.to) throw bad('Origin and destination must be different.')
     if (!dateOk(s.date)) throw bad('Choose a travel date.')
     if (s.date < todayIso) throw bad('Travel dates cannot be in the past.')
+    if (s.date > new Date(Date.now() + 361 * 864e5).toISOString().slice(0, 10)) throw bad('Airlines open flights about 11 months ahead. Please choose an earlier date.')
     if (i && s.date < segs[i - 1].date) throw bad('Each flight date must be on or after the one before it.')
   })
 
@@ -65,13 +68,23 @@ export async function search(input) {
     Sources: Array.isArray(input.sources) && input.sources.length ? input.sources.map(String) : null,
   }
   // TBO: ErrorCode 6 = invalid token (check the code, not the message) → fresh token, retry once.
+  const retried = (e) => e.code === 6
   const r = await air('Search', { tokenId: auth.tokenId }, searchBody).catch(async (e) => {
-    if (e.code !== 6) throw e
+    if (!retried(e)) throw e
     auth = await authenticate({ force: true })
     return air('Search', { tokenId: auth.tokenId }, searchBody)
+  }).catch((e) => {
+    // "No Result Found" (TBO ErrorCode 25) just means no flights that day: show the empty results page, not a red error
+    if (e.code === 25 || /no result/i.test(String(e.message))) return { Results: [], TraceId: null }
+    throw e
   })
+  if (!(r.Results || []).some((l) => l?.length)) {
+    return { session: seal({ tokenId: auth.tokenId, traceId: r.TraceId, journey, domestic, lists: 1, pax: { adults, children, infants } }), traceId: r.TraceId, journey, domestic, lists: [[]], pax: { adults, children, infants }, live: IS_LIVE, empty: true }
+  }
 
-  const lists = (r.Results || []).map((list) => list.map((x) => ({ ...summarise(x), ...(journey === 'advance' ? { rbd: rbdItem(x) } : {}) })).sort((a, b) => (a.price ?? 1e12) - (b.price ?? 1e12)))
+  // the price shown is the airline's fare plus our markup (set in the CRM), for the whole party
+  const priceCtx = { rule: ruleFor(await getMarkup(), domestic), pax: { adults, children, infants } }
+  const lists = (r.Results || []).map((list) => list.map((x) => ({ ...summarise(x, priceCtx), ...(journey === 'advance' ? { rbd: rbdItem(x) } : {}) })).sort((a, b) => (a.price ?? 1e12) - (b.price ?? 1e12)))
   const session = seal({ tokenId: auth.tokenId, traceId: r.TraceId, journey, domestic, lists: (r.Results || []).length || 1, pax: { adults, children, infants } })
   return {
     session,
@@ -99,10 +112,22 @@ function pickClass(av = []) {
   return (open.find((a) => a.Class === 'Y') || open[0] || {}).Class || ''
 }
 
+/** 'BLR-DEL' (or 'BLR-DEL DEL-BLR' for a result holding both directions), for the CRM. */
+const routeOf = (segments) => (segments || []).map((j) => `${j?.[0]?.Origin?.Airport?.AirportCode}-${j?.at(-1)?.Destination?.Airport?.AirportCode}`).join(' ')
+
+/** Cancellation / date-change fees for one search result, before the customer commits to it. Optional: never blocks. */
+export async function fareRules({ session: token, resultIndex }) {
+  const s = unseal(token)
+  if (!resultIndex || typeof resultIndex !== 'string' || resultIndex.length > 3000) throw bad('Choose a fare.')
+  const rule = await air('FareRule', s, { ResultIndex: resultIndex }, { allowError: true }).catch(() => null)
+  return { rules: (rule?.FareRules || []).slice(0, 4).map((f) => ({ origin: f.Origin, destination: f.Destination, fareBasis: f.FareBasisCode, mini: f.MiniFareRules })) }
+}
+
 /** GetCalendarFare: lowest fare per day for a one-way month view. */
 export async function calendar(input) {
   const from = up(input.from), to = up(input.to), date = String(input.date || '')
   if (!iataOk(from) || !iataOk(to) || !dateOk(date)) throw bad('Choose airports and a month.')
+  const rule = ruleFor(await getMarkup(), isDomesticCode(from) && isDomesticCode(to))
   const auth = await authenticate()
   const r = await air('GetCalendarFare', { tokenId: auth.tokenId }, {
     JourneyType: '1',
@@ -114,12 +139,12 @@ export async function calendar(input) {
     traceId: r.TraceId,
     days: (r.SearchResults || []).map((d) => ({
       date: d.DepartureDate, airline: d.AirlineName, code: d.AirlineCode, lowest: !!d.IsLowestFare,
-      price: customerPrice((d.BaseFare || 0) + (d.Tax || 0) + (d.OtherCharges || 0) + (d.FuelSurcharge || 0)),
+      price: priceWith((d.BaseFare || 0) + (d.Tax || 0) + (d.OtherCharges || 0) + (d.FuelSurcharge || 0), rule, { adults: 1 }),
     })),
   }
 }
 
-function summarise(x) {
+function summarise(x, ctx) {
   const journeys = (x.Segments || []).map((legs) => {
     const first = legs[0], last = legs[legs.length - 1]
     return {
@@ -160,7 +185,7 @@ function summarise(x) {
     baggage: seg0?.Baggage || '',
     cabinBaggage: seg0?.CabinBaggage || '',
     // Advance search results are unpriced until PriceRBD.
-    price: x.Fare ? customerPrice(x.Fare.PublishedFare) : null,
+    price: x.Fare ? (ctx ? priceWith(x.Fare.PublishedFare, ctx.rule, ctx.pax) : customerPrice(x.Fare.PublishedFare)) : null,
     currency: x.Fare?.Currency || 'INR',
     journeys,
   }
@@ -222,14 +247,17 @@ export async function quote({ session: token, resultIndexes, rbd }) {
   }
 
   const international = !s.domestic
-  const priced = legs.map((l) => ({ ...l, price: customerPrice(l.fare.PublishedFare) }))
+  const rule = ruleFor(await getMarkup(), s.domestic)
+  const priced = legs.map((l) => ({ ...l, price: priceWith(l.fare.PublishedFare, rule, s.pax) }))
   const quoteToken = seal({
     session: { tokenId: s.tokenId, traceId: s.traceId },
+    sessionExp: s.exp, // TBO lets a search live 15 minutes: nothing may be paid for after this
     journey: s.journey,
     international,
     pax: s.pax,
     legs: priced.map(({ resultIndex, isLCC, isGSTMandatory, passportAtBook, passportAtTicket, fare, breakdown, price, segments, mealRequired, seatRequired, panRequired, passportFull, airlineCode, source }) => ({
       resultIndex, isLCC, isGSTMandatory, passportAtBook, passportAtTicket, fare, breakdown, price, mealRequired, seatRequired, panRequired, passportFull, airlineCode, source,
+      route: routeOf(segments),
       depDate: segments?.[0]?.[0]?.Origin?.DepTime,
       lastDepDate: segments?.at(-1)?.at(-1)?.Origin?.DepTime,
     })),
@@ -287,7 +315,7 @@ const ssrKey = (x) => [x.Origin, x.Destination, x.WayType, x.Code, x.FlightNumbe
 
 /* ---------------- checkout: validate passengers, SSR (last call), payment order ---------------- */
 
-export async function checkout({ quote: token, passengers, contact, gst, choices }) {
+export async function checkout({ quote: token, passengers, contact, gst, choices, userId }) {
   const q = unseal(token, 'fare quote')
   const paxList = validatePassengers(passengers, q, contact)
   if (q.legs.some((l) => l.isGSTMandatory) && !gst?.number) throw bad('This fare needs your company GST details.')
@@ -313,19 +341,34 @@ export async function checkout({ quote: token, passengers, contact, gst, choices
   }
 
   const fareTotal = q.legs.reduce((t, l) => t + l.price, 0)
+  const supplierFare = q.legs.reduce((t, l) => t + (Number(l.fare?.PublishedFare) || 0), 0) // what the airline charges
+  const markupInr = Math.max(0, Math.round((fareTotal - supplierFare) * 100) / 100) // what we added
   const amount = fareTotal + Math.ceil(ssrTotal)
   const orderRef = 'PT' + Date.now().toString(36).toUpperCase() + crypto.randomBytes(2).toString('hex').toUpperCase()
 
+  // TBO holds a search for 15 minutes. Paying takes a couple of minutes and ticketing up to one more, so do not even start a
+  // payment when too little is left: the customer would be charged for a ticket we can no longer buy.
+  const holdLeft = (q.sessionExp || Date.now() + 15 * 60_000) - Date.now()
+  if (holdLeft < 4 * 60_000) throw new TboError('This fare is about to time out. Please search again.', { status: 410 })
+  const ttl = Math.min(15 * 60_000, holdLeft)
+  const expiresAt = Date.now() + ttl
+
   let payment
-  if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
-    payment = { mode: 'razorpay', ...(await razorpayOrder(amount, orderRef, contact)) }
+  if (razorpayConfigured()) {
+    payment = { mode: 'razorpay', expiresAt, ...(await razorpayOrder(amount, orderRef, { route: q.legs.map((l) => l.route).filter(Boolean).join(' | '), traceId: q.session.traceId })) }
   } else if (fakePaymentsAllowed()) {
     payment = { mode: 'test', orderId: 'test_' + orderRef }
   } else {
     throw new TboError('Online payment is not switched on yet. Please call or WhatsApp us to book this fare.', { status: 503 })
   }
 
-  const checkoutToken = seal({ session: q.session, payloads, amount, orderId: payment.orderId, orderRef, contact: paxList.contact }, 15 * 60 * 1000)
+  const checkoutToken = seal({ session: q.session, payloads, amount, orderId: payment.orderId, orderRef, contact: paxList.contact }, ttl)
+  await recordCheckout({
+    userId, orderRef, checkoutToken, fareInr: supplierFare, markupInr, traceId: q.session.traceId, amount, orderId: payment.orderId, contact: paxList.contact, pax: paxList, journey: q.journey,
+    route: q.legs.map((l) => l.route).filter(Boolean).join(' | '),
+    travelDate: q.legs.map((l) => l.depDate).filter(Boolean).sort()[0],
+    returnDate: q.legs.length > 1 ? q.legs.at(-1).depDate : q.legs[0]?.lastDepDate !== q.legs[0]?.depDate ? q.legs[0]?.lastDepDate : null,
+  })
   return { checkout: checkoutToken, amount, fareTotal, ssrTotal: Math.ceil(ssrTotal), orderRef, payment }
 }
 
@@ -407,7 +450,7 @@ export function validatePassengers(list, q, contact) {
   const firstDep = q.legs.map((l) => l.depDate).filter(Boolean).sort()[0] || new Date().toISOString()
   const names = new Set()
 
-  if (!/^[6-9]\d{9}$/.test(String(contact?.phone || '').replace(/\D/g, '').slice(-10))) throw bad('Enter a valid 10-digit mobile number.')
+  if (!phoneOk(contact?.phone)) throw bad('Enter a valid mobile number (10 digits, or with your country code, like +971 50 123 4567).')
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(contact?.email || '')) throw bad('Enter a valid email address.')
 
   const out = list.map((p, i) => {
@@ -466,8 +509,20 @@ export function validatePassengers(list, q, contact) {
     return { paxType, title: p.title, first, last, gender, dob, passport, pan, guardian, nationality: up(p.nationality || 'IN').slice(0, 2) }
   })
   for (const t of [1, 2, 3]) if (have[t] !== need[t]) throw bad('Passenger count does not match your search.')
-  out.contact = { phone: String(contact.phone).replace(/\D/g, '').slice(-10), email: contact.email.trim(), address: clean(contact.address || '') || 'Bengaluru', city: clean(contact.city || '') || 'Bengaluru' }
+  out.contact = { phone: phoneDigits(contact.phone), email: contact.email.trim(), address: clean(contact.address || '') || 'Bengaluru', city: clean(contact.city || '') || 'Bengaluru' }
   return out
+}
+
+/** A mobile number: Indian (10 digits starting 6-9, with or without +91 / 0) or international (+ country code, 8 to 15 digits). */
+const phoneOk = (v) => {
+  const raw = String(v || '').trim(), d = raw.replace(/\D/g, '')
+  if (raw.startsWith('+') && !d.startsWith('91')) return d.length >= 8 && d.length <= 15
+  return /^[6-9]\d{9}$/.test(d.slice(-10)) && (d.length === 10 || (d.length === 11 && d[0] === '0') || (d.length === 12 && d.startsWith('91')))
+}
+/** What TBO and the CRM get: 10 digits for an Indian number, the full digits (with country code) otherwise. */
+const phoneDigits = (v) => {
+  const raw = String(v || '').trim(), d = raw.replace(/\D/g, '')
+  return raw.startsWith('+') && !d.startsWith('91') ? d : d.slice(-10)
 }
 
 function validateGst(g) {
@@ -544,10 +599,109 @@ const paxTotal = (leg) => (leg.breakdown || []).reduce((t, b) => t + (b.Passenge
 
 /* ---------------- ticket ---------------- */
 
-export async function ticket({ checkout: token, payment }) {
-  const c = unseal(token, 'checkout')
-  await confirmPayment(c, payment)
+/** Payments we are issuing tickets for right now in THIS server instance (a guard of last resort when the database is unreachable). */
+const INFLIGHT = new Map()
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const FINAL = ['ticketed', 'needs_attention', 'failed', 'refunded', 'cancelled']
 
+export async function ticket({ checkout: token, payment }) {
+  const c = unseal(token, 'checkout', { ignoreExpiry: true })
+  if (c.exp < Date.now()) return lateTicket(c, payment)
+  let paid
+  try {
+    paid = await verifyPayment(c, payment)
+  } catch (e) {
+    await recordPaymentFailed(c.orderRef, e.message)
+    throw e
+  }
+  // One payment, one ticket: only the first of {this request, a retry, the Razorpay webhook} may issue it.
+  const claim = await claimTicketing(c.orderRef, paid.paymentId, c.amount)
+  if (!claim.claimed) return existingOutcome(c, claim)
+  if (claim.unguarded) {
+    if (INFLIGHT.has(c.orderRef)) return INFLIGHT.get(c.orderRef)
+    const run = issueTickets(c, paid.paymentId).finally(() => INFLIGHT.delete(c.orderRef))
+    INFLIGHT.set(c.orderRef, run)
+    return run
+  }
+  return issueTickets(c, paid.paymentId)
+}
+
+/** The customer's browser says it paid: check it, never trust it. Test-mode orders skip Razorpay (and are refused on live). */
+async function verifyPayment(c, p) {
+  if (String(c.orderId).startsWith('test_')) {
+    if (!fakePaymentsAllowed()) throw new TboError('Test payments are not allowed.', { status: 402 })
+    return { paymentId: c.orderId }
+  }
+  if (!p?.paymentId || p.orderId !== c.orderId || !checkoutSignatureOk(c.orderId, p.paymentId, p.signature)) throw new TboError('Payment could not be verified.', { status: 402 })
+  try {
+    return await rzpConfirm({ orderId: c.orderId, paymentId: p.paymentId, amountInr: c.amount, record: recordPayment })
+  } catch (e) {
+    if (e instanceof PayError) throw new TboError(e.message, { status: e.status })
+    throw e
+  }
+}
+
+/** The 15-minute window had already closed when the browser came back. If money really moved, a person must put it right. */
+async function lateTicket(c, payment) {
+  if (payment?.paymentId && !String(c.orderId).startsWith('test_')) {
+    try {
+      const paid = await rzpConfirm({ orderId: c.orderId, paymentId: payment.paymentId, amountInr: c.amount, record: recordPayment })
+      await markUnfulfilled(c.orderId, paid.paymentId, c.amount, 'paid after the fare hold expired')
+    } catch { /* not a real payment: nothing to put right */ }
+  }
+  throw new TboError(`The time to complete this booking ran out. If you were charged, our team has your reference ${c.orderRef} and will refund you in full or complete the booking. You do not need to pay again.`, { status: 410 })
+}
+
+/** Someone else (the webhook, or this customer's earlier request) is issuing, or has issued, this ticket: wait and return the same result. */
+async function existingOutcome(c, claim) {
+  if (claim.status === 'payment_used') throw new TboError('This payment has already been used for another booking.', { status: 409 })
+  const deadline = Date.now() + 110_000
+  for (;;) {
+    const o = await bookingOutcome(c.orderRef)
+    if (o && FINAL.includes(o.status) && Array.isArray(o.legs) && o.legs.length) {
+      return { orderRef: c.orderRef, amount: c.amount, results: o.legs.map((l) => ({ bookingId: l.bookingId, pnr: l.pnr, ticketStatus: l.ticketStatus, error: l.error, details: l.details })) }
+    }
+    if (Date.now() > deadline) break
+    await sleep(2500)
+  }
+  return { orderRef: c.orderRef, amount: c.amount, pending: true, results: [{ error: 'Your payment is received and your ticket is being issued. Please do not pay again; it will appear in your e-mail and in My trips shortly.' }] }
+}
+
+/**
+ * Razorpay says this order was paid (webhook). If the customer's browser has not finished the booking (it was closed, the
+ * connection dropped), finish it here so a paid customer never ends up without a ticket. Returns a short note for the log.
+ */
+export async function fulfilPaidOrder({ orderId, paymentId, graceMs = Number(process.env.WEBHOOK_GRACE_MS ?? 20000) }) {
+  let row = await bookingForOrder(orderId)
+  if (!row) return 'not one of our bookings'
+  if (row.status !== 'payment_pending') return `already ${row.status}`
+  // the customer's own browser normally finishes within seconds: give it the first go
+  if (graceMs) {
+    await sleep(graceMs)
+    row = await bookingForOrder(orderId)
+    if (!row || row.status !== 'payment_pending') return `finished by the customer's browser (${row?.status})`
+  }
+  const amount = Number(row.amount_inr)
+  let paid
+  try {
+    paid = await rzpConfirm({ orderId, paymentId, amountInr: amount, record: recordPayment })
+  } catch (e) {
+    await paymentNote(orderId, 'payment_failed', { message: e.message })
+    return `payment not valid: ${e.message}`
+  }
+  let c
+  try { c = row.checkout_token ? unseal(row.checkout_token, 'checkout', { ignoreExpiry: true }) : null } catch { c = null }
+  if (!c || c.orderId !== orderId || c.exp < Date.now()) {
+    await markUnfulfilled(orderId, paid.paymentId, amount, c ? 'paid after the fare hold expired' : 'no booking data was stored')
+    return 'paid but could not be ticketed (needs a person)'
+  }
+  const claim = await claimTicketing(c.orderRef, paid.paymentId, c.amount)
+  if (!claim.claimed) return `not claimed (${claim.status})`
+  await issueTickets(c, paid.paymentId)
+  return 'ticket issued by webhook'
+}
+
+async function issueTickets(c, paymentId) {
   const results = []
   for (const leg of c.payloads) {
     const passengers = leg.passengers
@@ -611,7 +765,7 @@ export async function ticket({ checkout: token, payment }) {
     results.push({ bookingId, pnr, ticketStatus: status, error, details })
   }
   const out = { orderRef: c.orderRef, amount: c.amount, results }
-  recordBooking({ ...out, traceId: c.session.traceId, paymentId: payment?.paymentId || c.orderId, contact: c.contact })
+  await recordOutcome({ ...out, paymentId })
   return out
 }
 
@@ -630,41 +784,26 @@ function bookingSummary(d) {
     status: it.Status,
     airline: it.AirlineCode,
     passengers: (it.Passenger || []).map((p) => ({ name: `${p.Title} ${p.FirstName} ${p.LastName}`, ticket: p.Ticket?.TicketNumber || '' })),
-    segments: (it.Segments || []).map((g) => ({ flight: `${g.Airline.AirlineCode} ${g.Airline.FlightNumber}`, from: g.Origin.Airport.AirportCode, to: g.Destination.Airport.AirportCode, dep: g.Origin.DepTime })),
+    segments: (it.Segments || []).map((g) => ({
+      flight: `${g.Airline.AirlineCode} ${g.Airline.FlightNumber}`, airline: g.Airline.AirlineName,
+      from: g.Origin.Airport.AirportCode, to: g.Destination.Airport.AirportCode, dep: g.Origin.DepTime, arr: g.Destination.ArrTime,
+      fromTerminal: g.Origin.Airport.Terminal, toTerminal: g.Destination.Airport.Terminal, baggage: g.Baggage, cabinBaggage: g.CabinBaggage,
+    })),
   }
 }
 
 /* ---------------- payment ---------------- */
 
-async function razorpayOrder(amount, receipt, contact) {
-  const auth = Buffer.from(`${process.env.RAZORPAY_KEY_ID}:${process.env.RAZORPAY_KEY_SECRET}`).toString('base64')
-  const r = await fetch('https://api.razorpay.com/v1/orders', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Basic ${auth}` },
-    body: JSON.stringify({ amount: Math.round(amount * 100), currency: 'INR', receipt, notes: { purpose: 'flight', phone: contact?.phone || '' } }),
-  })
-  const data = await r.json()
-  if (!r.ok) throw new TboError(data?.error?.description || 'Could not start payment.', { status: 502 })
-  return { orderId: data.id, keyId: process.env.RAZORPAY_KEY_ID, amountPaise: data.amount }
-}
-
-async function confirmPayment(c, p) {
-  if (String(c.orderId).startsWith('test_')) {
-    if (!fakePaymentsAllowed()) throw new TboError('Test payments are not allowed.', { status: 402 })
-    return
-  }
-  const secret = process.env.RAZORPAY_KEY_SECRET
-  if (!secret || !p?.paymentId || !p?.signature || p.orderId !== c.orderId) throw new TboError('Payment could not be verified.', { status: 402 })
-  const expected = crypto.createHmac('sha256', secret).update(`${c.orderId}|${p.paymentId}`).digest('hex')
-  if (expected.length !== p.signature.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(p.signature))) {
-    throw new TboError('Payment signature mismatch.', { status: 402 })
-  }
-  // Payment must be captured for the full amount before we spend the TBO wallet.
-  const auth = Buffer.from(`${process.env.RAZORPAY_KEY_ID}:${secret}`).toString('base64')
-  const r = await fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(p.paymentId)}`, { headers: { Authorization: `Basic ${auth}` } })
-  const pay = await r.json()
-  if (!r.ok || pay.order_id !== c.orderId || pay.amount !== Math.round(c.amount * 100) || !['captured', 'authorized'].includes(pay.status)) {
-    throw new TboError('Payment is not complete for this booking.', { status: 402 })
+/** A Razorpay order for exactly what the server worked out (never a number from the browser). */
+async function razorpayOrder(amount, orderRef, notes) {
+  const mismatch = paymentModeProblem(process.env.RAZORPAY_KEY_ID, IS_LIVE)
+  if (mismatch) { console.error('[payments]', mismatch); throw new TboError('Online booking is being switched on. Please try again shortly, or call us.', { status: 503 }) }
+  try {
+    const o = await createOrder({ amountPaise: Math.round(amount * 100), receipt: orderRef, notes: { orderRef, ...notes } })
+    return { orderId: o.orderId, keyId: process.env.RAZORPAY_KEY_ID, amountPaise: o.amountPaise }
+  } catch (e) {
+    if (e instanceof PayError) { console.error('[payments] order failed:', e.message); throw new TboError('Could not start the payment. Please try again.', { status: 502 }) }
+    throw e
   }
 }
 

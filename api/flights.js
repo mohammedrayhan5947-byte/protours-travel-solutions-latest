@@ -1,5 +1,7 @@
-import { search, quote, checkout, ticket, calendar } from './_lib/flights.js'
-import { TboError, IS_LIVE } from './_lib/tbo.js'
+import { search, quote, checkout, ticket, calendar, fareRules } from './_lib/flights.js'
+import { TboError, IS_LIVE, flushLogs, withEndUserIp, fakePaymentsAllowed } from './_lib/tbo.js'
+import { razorpayConfigured, paymentModeProblem } from './_lib/pay.js'
+import { optionalUser } from './_lib/customer.js'
 
 /**
  * Vercel serverless function — the website's only door to the TBO Air API.
@@ -7,14 +9,38 @@ import { TboError, IS_LIVE } from './_lib/tbo.js'
  * TBO credentials and the TokenId stay on the server; the browser only ever
  * holds sealed (encrypted, 15-minute) session tokens.
  */
-const ACTIONS = { search, quote, checkout, ticket, calendar }
+const ACTIONS = { search, quote, checkout, ticket, calendar, fareRules }
 
 export const config = { maxDuration: 300 } // Book/Ticket can take up to 300 s (TBO guide)
 
-export default async function handler(req, res) {
+/* Starting payments and issuing tickets spend real resources: a speed bump per address (per server instance). */
+const hits = new Map()
+const LIMITS = { checkout: [12, 10 * 60_000], ticket: [20, 10 * 60_000] }
+function tooMany(action, req) {
+  const lim = LIMITS[action]
+  if (!lim) return false
+  const ip = String(req.headers?.['x-forwarded-for'] || '').split(',')[0].trim() || 'unknown'
+  const key = `${action}:${ip}`
+  const now = Date.now()
+  const recent = (hits.get(key) || []).filter((t) => now - t < lim[1])
+  if (recent.length >= lim[0]) return true
+  hits.set(key, [...recent, now])
+  if (hits.size > 3000) hits.clear()
+  return false
+}
+
+// Vercel sets x-forwarded-for to the real client address; the gateway logs it next to each TBO call.
+const customerIp = (req) => String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || String(req.headers['x-real-ip'] || '')
+export default function handler(req, res) {
+  return withEndUserIp(customerIp(req), () => run(req, res))
+}
+
+async function run(req, res) {
   if (req.method === 'GET') {
     // Lets the page know whether online flight booking is switched on here.
-    return res.status(200).json({ enabled: flightsEnabled(), live: IS_LIVE })
+    // `payments` only tells a TEST site how payment will behave (so a developer is not left wondering why no card window opens)
+    const payments = razorpayConfigured() ? (paymentModeProblem(process.env.RAZORPAY_KEY_ID, IS_LIVE) ? 'blocked' : 'razorpay') : fakePaymentsAllowed() ? 'test' : 'off'
+    return res.status(200).json({ enabled: flightsEnabled(), live: IS_LIVE, ...(IS_LIVE ? {} : { payments }) })
   }
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'GET, POST')
@@ -23,15 +49,21 @@ export default async function handler(req, res) {
   if (!flightsEnabled()) return res.status(503).json({ error: 'Online flight booking is not switched on yet. Please call or WhatsApp us.' })
 
   const { action, ...payload } = req.body || {}
-  const fn = ACTIONS[action]
+  // A booking made while signed in is linked to that customer. The id comes from the verified token, never from the request body.
+  delete payload.userId
+  if (action === 'checkout') payload.userId = (await optionalUser(req))?.sub || null
+  const fn = Object.hasOwn(ACTIONS, action) ? ACTIONS[action] : null
   if (!fn) return res.status(400).json({ error: 'Unknown action.' })
+  if (tooMany(action, req)) return res.status(429).json({ error: 'Too many attempts from this network. Please wait a few minutes.' })
 
   try {
     const data = await fn(payload)
+    await flushLogs()
     res.setHeader('Cache-Control', 'no-store')
     return res.status(200).json(data)
   } catch (e) {
     const status = e instanceof TboError ? e.status || 502 : 500
+    await flushLogs()
     if (!(e instanceof TboError)) console.error('[flights]', action, e)
     return res.status(status).json({ error: e instanceof TboError ? e.message : 'Something went wrong. Please try again or call us.', code: e.code ?? null })
   }

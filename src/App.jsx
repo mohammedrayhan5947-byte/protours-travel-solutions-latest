@@ -17,6 +17,7 @@ const Packages      = lazy(() => import('./pages/Packages.jsx'))
 const FlightsHotels = lazy(() => import('./pages/FlightsHotels.jsx'))
 const BookFlights   = lazy(() => import('./pages/BookFlights.jsx'))
 const Crm           = lazy(() => import('./pages/Crm.jsx'))
+const Account       = lazy(() => import('./pages/Account.jsx'))
 const Umrah         = lazy(() => import('./pages/Umrah.jsx'))
 const Visa          = lazy(() => import('./pages/Visa.jsx'))
 const Contact       = lazy(() => import('./pages/Contact.jsx'))
@@ -107,6 +108,8 @@ export default function App() {
             <Route path="/flights-hotels" element={<Page><FlightsHotels /></Page>} />
             {/* Back office: not in ROUTES, so never pre-rendered, listed or indexed. */}
             <Route path="/crm"            element={<Page><Crm /></Page>} />
+            {/* Customer accounts ("My trips"): private, so not pre-rendered or indexed either. */}
+            <Route path="/account"        element={<Page><Account /></Page>} />
             <Route path="/book-flights"   element={<Page><BookFlights /></Page>} />
             <Route path="/umrah"          element={<Page><Umrah /></Page>} />
             <Route path="/visa"           element={<Page><Visa /></Page>} />

@@ -3,6 +3,8 @@
  * international (TBO FAQ Q23: domestic = both ends in India).
  * Shared with the browser bundle via src/data/airports.js.
  */
+import { WORLD_ALL, COUNTRY_NAMES } from './airports-world.js'
+
 const IN = [
   ['BLR', 'Bengaluru', 'Kempegowda International'], ['DEL', 'Delhi', 'Indira Gandhi International'], ['BOM', 'Mumbai', 'Chhatrapati Shivaji Maharaj International'],
   ['MAA', 'Chennai', 'Chennai International'], ['HYD', 'Hyderabad', 'Rajiv Gandhi International'], ['CCU', 'Kolkata', 'Netaji Subhas Chandra Bose International'],
@@ -17,6 +19,17 @@ const IN = [
   ['IXZ', 'Port Blair', 'Veer Savarkar International'], ['UDR', 'Udaipur', 'Maharana Pratap'], ['JDH', 'Jodhpur', 'Jodhpur'], ['STV', 'Surat', 'Surat'], ['BDQ', 'Vadodara', 'Vadodara'],
   ['RAJ', 'Rajkot', 'Rajkot International'], ['DED', 'Dehradun', 'Jolly Grant'], ['IXR', 'Ranchi', 'Birsa Munda'], ['AGR', 'Agra', 'Agra'], ['GAY', 'Gaya', 'Gaya'], ['IXA', 'Agartala', 'Maharaja Bir Bikram'],
   ['IMF', 'Imphal', 'Imphal'], ['DIB', 'Dibrugarh', 'Dibrugarh'], ['IXU', 'Aurangabad', 'Aurangabad'], ['NDC', 'Nanded', 'Nanded'], ['KLH', 'Kolhapur', 'Kolhapur'], ['AYJ', 'Ayodhya', 'Maharishi Valmiki International'],
+  // more Indian airports (the search box only offers codes listed here)
+  ['KNU', 'Kanpur', 'Kanpur (Chakeri)'], ['GWL', 'Gwalior', 'Rajmata Vijaya Raje Scindia'], ['JLR', 'Jabalpur', 'Jabalpur'], ['HJR', 'Khajuraho', 'Khajuraho'], ['PRG', 'Prayagraj', 'Prayagraj'], ['IXD', 'Prayagraj', 'Prayagraj (Bamrauli)'],
+  ['GOP', 'Gorakhpur', 'Gorakhpur'], ['BEK', 'Bareilly', 'Bareilly'], ['HDO', 'Hindon (Ghaziabad)', 'Hindon'], ['KUU', 'Kullu', 'Bhuntar'], ['SLV', 'Shimla', 'Shimla'], ['DHM', 'Dharamshala', 'Gaggal'],
+  ['PGH', 'Pantnagar', 'Pantnagar'], ['LUH', 'Ludhiana', 'Sahnewal'], ['PTK', 'Pathankot', 'Pathankot'], ['BKB', 'Bikaner', 'Nal'], ['JSA', 'Jaisalmer', 'Jaisalmer'], ['KQH', 'Kishangarh (Ajmer)', 'Kishangarh'],
+  ['BHJ', 'Bhuj', 'Bhuj'], ['JGA', 'Jamnagar', 'Jamnagar'], ['BHU', 'Bhavnagar', 'Bhavnagar'], ['PBD', 'Porbandar', 'Porbandar'], ['DIU', 'Diu', 'Diu'], ['NMB', 'Daman', 'Daman'],
+  ['SSE', 'Solapur', 'Solapur'], ['JGB', 'Jagdalpur', 'Jagdalpur'], ['BSP', 'Bilaspur', 'Bilaspur'], ['JRG', 'Jharsuguda', 'Veer Surendra Sai'], ['RRK', 'Rourkela', 'Rourkela'], ['DBD', 'Dhanbad', 'Dhanbad'],
+  ['IXW', 'Jamshedpur', 'Sonari'], ['DGH', 'Deoghar', 'Deoghar'], ['RDP', 'Durgapur', 'Kazi Nazrul Islam'], ['PYG', 'Gangtok', 'Pakyong'], ['DMU', 'Dimapur', 'Dimapur'], ['AJL', 'Aizawl', 'Lengpui'],
+  ['SHL', 'Shillong', 'Shillong'], ['TEZ', 'Tezpur', 'Tezpur'], ['JRH', 'Jorhat', 'Jorhat'], ['IXS', 'Silchar', 'Silchar'], ['LDA', 'Malda', 'Malda'], ['COH', 'Cooch Behar', 'Cooch Behar'],
+  ['RJA', 'Rajahmundry', 'Rajahmundry'], ['CDP', 'Kadapa', 'Kadapa'], ['WGC', 'Warangal', 'Warangal'], ['PUT', 'Puttaparthi', 'Sri Sathya Sai'], ['BEP', 'Ballari', 'Bellary'],
+  ['RQY', 'Shivamogga', 'Shivamogga'], ['TCR', 'Thoothukudi', 'Tuticorin'], ['SXV', 'Salem', 'Salem'], ['IXY', 'Kandla', 'Kandla'], ['AGX', 'Agatti', 'Agatti'], ['PNY', 'Puducherry', 'Puducherry'],
+  ['HSR', 'Rajkot', 'Rajkot (Hirasar)'], ['MOH', 'Mohanbari', 'Dibrugarh (Mohanbari)'], ['IXN', 'Khowai', 'Khowai'],
 ].map(([code, city, name]) => [code, { city, name, country: 'IN' }])
 
 const WORLD = [
@@ -32,4 +45,8 @@ const WORLD = [
   ['NBO', 'Nairobi', 'Jomo Kenyatta', 'KE'], ['BAK', 'Baku', 'Heydar Aliyev', 'AZ'], ['TBS', 'Tbilisi', 'Tbilisi', 'GE'], ['ALA', 'Almaty', 'Almaty', 'KZ'],
 ].map(([code, city, name, country]) => [code, { city, name, country }])
 
-export const AIRPORTS = Object.fromEntries([...IN, ...WORLD])
+// every airport in the world with scheduled flights first, then the hand-written entries on top (they win: nicer names, and the home market)
+const ALL = WORLD_ALL.map(([code, city, name, country]) => [code, { city, name, country }])
+export const AIRPORTS = Object.fromEntries([...ALL, ...IN, ...WORLD])
+export const FEATURED = [...IN, ...WORLD].map(([code]) => code) // shown first when the search box is empty
+export const countryName = (code) => COUNTRY_NAMES[AIRPORTS[code]?.country] || ''

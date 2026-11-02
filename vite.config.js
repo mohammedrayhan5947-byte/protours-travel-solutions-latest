@@ -47,10 +47,10 @@ function razorpayDevApi() {
   return {
     name: 'razorpay-dev-api',
     configureServer(server) {
-      mount(server, '/api/create-order', '/api/create-order.js')
-      mount(server, '/api/verify-payment', '/api/verify-payment.js')
       mount(server, '/api/flights', '/api/flights.js')
       mount(server, '/api/crm', '/api/crm.js')
+      mount(server, '/api/account', '/api/account.js')
+      mount(server, '/api/enquiry', '/api/enquiry.js')
     },
   }
 }
@@ -61,8 +61,12 @@ export default defineConfig(({ mode, isSsrBuild }) => {
   // .env.local too, so the dev API middleware above can read them.
   const env = loadEnv(mode, process.cwd(), '')
   // Server-only settings for the dev API (Razorpay, TBO, markup…). Never VITE_-prefixed.
+  // Values typed in the terminal / the system win. Values that came from the .env files are remembered, so when you edit a .env
+  // file and Vite restarts itself inside the same process (it does that automatically), the NEW values replace the old ones
+  // instead of being skipped because "something is already set". (Skipping them mixed old test values with new live ones.)
+  const fromFiles = (globalThis.__envFromFiles ||= new Set())
   for (const [k, v] of Object.entries(env)) {
-    if (/^(RAZORPAY_|TBO_|FLIGHT|ALLOW_FAKE|SIGNING_SECRET|CRON_SECRET|STAFF_|CRM_|SUPABASE_)/.test(k) && process.env[k] === undefined) process.env[k] = v
+    if (/^(RAZORPAY_|TBO_|FLIGHT|ALLOW_FAKE|SIGNING_SECRET|CRON_SECRET|STAFF_|CRM_|SUPABASE_)/.test(k) && (process.env[k] === undefined || fromFiles.has(k))) { process.env[k] = v; fromFiles.add(k) }
   }
 
   // Second build pass used only by scripts/prerender.mjs (see package.json).

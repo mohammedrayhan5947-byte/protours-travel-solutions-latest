@@ -1,7 +1,22 @@
 import { useEffect, useId, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { waLink, SERVICES } from '../data/site.js'
 
 const SERVICE_OPTIONS = [...SERVICES.map((s) => s.title), 'Corporate Travel', 'Travel Insurance']
+
+/** Saves a copy of the enquiry for our desk (the CRM). Never blocks or breaks the WhatsApp hand-off. */
+function saveEnquiry(fields, trap) {
+  const message = Object.entries(fields).filter(([k, v]) => v && !['Name', 'Mobile', 'Service'].includes(k)).map(([k, v]) => `${k}: ${v}`).join('\n')
+  return fetch('/api/enquiry', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    keepalive: true,
+    body: JSON.stringify({ name: fields.Name, phone: fields.Mobile, topic: fields.Service, message, page: window.location.pathname, consent: true, website: trap }),
+  }).then((r) => r.ok).catch(() => false)
+}
+
+/** Off-screen field that people leave empty and bots fill in. */
+const Trap = () => <input type="text" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" className="pointer-events-none absolute -left-[9999px] h-0 w-0 opacity-0" />
 
 /** WhatsApp glyph (lucide has no WhatsApp mark). */
 const WaIcon = ({ size = 19 }) => (
@@ -42,8 +57,9 @@ const today = () => {
 }
 
 /**
- * Enquiry form. Serialises its fields into a formatted WhatsApp message
- * and opens the chat — no backend required, which suits the business.
+ * Enquiry form. Serialises its fields into a formatted WhatsApp message and opens the chat; a copy is also
+ * saved for our desk (the notice under the button says so, and the Privacy Policy covers it).
+ * The WhatsApp hand-off never depends on the copy being saved.
  *
  * variant: 'glass' (on photography / navy) | 'light' (on paper or sand)
  * layout:  'bar' (single row, hero) | 'full' (stacked, contact pages)
@@ -60,12 +76,18 @@ export default function EnquiryForm({ variant = 'light', layout = 'full', defaul
     e.preventDefault()
     const form = e.currentTarget
     const data = new FormData(form)
-    const lines = []
-    data.forEach((v, k) => { if (String(v).trim()) lines.push(`${k}: ${v}`) })
+    const lines = [], fields = {}
+    let trap = ''
+    data.forEach((v, k) => {
+      if (k === 'website') { trap = String(v); return }
+      fields[k] = String(v).trim()
+      if (String(v).trim()) lines.push(`${k}: ${v}`)
+    })
     if (!lines.length) return
 
     const msg = `*New Enquiry — Pro Tours & Travel Solutions*\n\n${lines.join('\n')}`
-    window.open(waLink(msg), '_blank', 'noopener,noreferrer')
+    window.open(waLink(msg), '_blank', 'noopener,noreferrer') // first, inside the click, so it is not blocked as a pop-up
+    saveEnquiry(fields, trap)
     setSent(true)
     setTimeout(() => setSent(false), 4000)
     form.reset()
@@ -73,7 +95,8 @@ export default function EnquiryForm({ variant = 'light', layout = 'full', defaul
 
   if (layout === 'bar') {
     return (
-      <form onSubmit={submit} className="grid gap-4 md:grid-cols-[1.1fr_1fr_1fr_auto] md:items-end">
+      <form onSubmit={submit} className="relative grid gap-4 md:grid-cols-[1.1fr_1fr_1fr_auto] md:items-end">
+        <Trap />
         <div className="min-w-0">
           <label className={s.label} htmlFor={id('service')}>What do you need?</label>
           <select id={id('service')} name="Service" autoComplete="off" className={s.field} defaultValue={defaultService}>
@@ -95,12 +118,16 @@ export default function EnquiryForm({ variant = 'light', layout = 'full', defaul
           <WaIcon /> {sent ? 'Opening WhatsApp…' : 'Get a free quote'}
         </button>
         <p role="status" aria-live="polite" className="sr-only">{sent ? 'Opening WhatsApp with your enquiry.' : ''}</p>
+        <p className={`text-[0.82rem] md:col-span-full ${s.foot}`}>
+          By sending, you agree we also save your enquiry so our desk can follow up. <Link to="/privacy" className="underline">Privacy Policy</Link>
+        </p>
       </form>
     )
   }
 
   return (
-    <form onSubmit={submit} className="grid gap-5">
+    <form onSubmit={submit} className="relative grid gap-5">
+      <Trap />
       <div className="grid gap-5 sm:grid-cols-2">
         <div className="min-w-0">
           <label className={s.label} htmlFor={id('name')}>Your name</label>
@@ -166,8 +193,8 @@ export default function EnquiryForm({ variant = 'light', layout = 'full', defaul
       <p role="status" aria-live="polite" className="sr-only">{sent ? 'Opening WhatsApp with your enquiry.' : ''}</p>
 
       <p className={`text-center text-[0.92rem] text-pretty ${s.foot}`}>
-        This opens WhatsApp with your details filled in, so you can check them before sending.
-        Nothing is stored on this site.
+        This opens WhatsApp with your details filled in, so you can check them before sending. By pressing the button you
+        also agree that we save your enquiry so our desk can follow up. See our <Link to="/privacy" className="underline">Privacy Policy</Link>.
       </p>
     </form>
   )

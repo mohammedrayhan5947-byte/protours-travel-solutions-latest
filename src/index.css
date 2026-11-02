@@ -403,3 +403,21 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* Printing the e-ticket on the booking confirmation page: show only the ticket. */
+@media print {
+  body * { visibility: hidden !important; }
+  .eticket, .eticket * { visibility: visible !important; }
+  .eticket { position: absolute; left: 0; top: 0; width: 100%; }
+}
+
+/* Flight search loading screen */
+@keyframes fly-across { 0% { transform: translate3d(-18px, 8px, 0) rotate(-3deg); } 100% { transform: translate3d(18px, -8px, 0) rotate(3deg); } }
+@keyframes drift { from { transform: translate3d(-6%, 0, 0); } to { transform: translate3d(6%, 0, 0); } }
+.animate-fly { animation: fly-across 2.2s ease-in-out infinite alternate; }
+.animate-drift { animation: drift 5s ease-in-out infinite alternate; }
+@media (prefers-reduced-motion: reduce) { .animate-fly, .animate-drift { animation: none; } }
+
+/* Mandatory fields in the booking form get a red star after their label */
+#review-form label:has(+ [required])::after,
+#review-form label:has(+ div > [required])::after { content: ' *'; color: #dc2626; font-weight: 700; }

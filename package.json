@@ -8,12 +8,19 @@
     "dev": "vite --host",
     "build": "vite build && vite build --ssr src/entry-server.jsx && node scripts/prerender.mjs",
     "build:spa": "vite build",
-    "preview": "vite preview --host"
+    "preview": "vite preview --host",
+    "env:status": "node scripts/use-env.mjs status",
+    "env:test": "node scripts/use-env.mjs test",
+    "env:live": "node scripts/use-env.mjs live"
   },
   "dependencies": {
+    "@firebase/app": "^0.16.4",
+    "@firebase/auth": "^1.13.8",
     "@gsap/react": "^2.1.2",
+    "@vercel/functions": "3.6.1",
     "framer-motion": "^12.23.12",
     "gsap": "^3.15.0",
+    "jspdf": "^4.2.1",
     "lucide-react": "^0.544.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

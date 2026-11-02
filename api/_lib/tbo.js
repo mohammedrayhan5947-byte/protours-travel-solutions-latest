@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -52,6 +53,11 @@ export const END_USER_IP = process.env.TBO_END_USER_IP || '192.168.10.10'
 const LOG_MODE = process.env.TBO_LOG_SEARCH || 'summary' // full | summary
 const LOG_DIR = process.env.VERCEL ? null : path.resolve(process.cwd(), '.data', 'tbo-logs')
 
+/* The customer's IP, for the gateway's call log only. api/flights.js wraps each request in withEndUserIp();
+   post() then adds an X-End-User-IP header, but only on calls that go through the relay (TBO itself never gets it). */
+const callerCtx = new AsyncLocalStorage()
+export const withEndUserIp = (ip, fn) => callerCtx.run({ ip: String(ip || '').slice(0, 64) }, fn)
+
 export class TboError extends Error {
   constructor(message, { code, method, status } = {}) {
     super(message)
@@ -64,30 +70,53 @@ export class TboError extends Error {
 /* ---------- logging ---------- */
 
 let seq = 0
-/** Copies every request/response to Supabase (tbo_logs) when SUPABASE_URL + SUPABASE_SERVICE_KEY are set. */
-function toSupabase(method, traceId, kind, body) {
+// Log rows wait here and go to Supabase in ONE bulk insert (a booking makes dozens of TBO calls; one insert
+// per call would cost dozens of round trips and database requests). The API handler awaits flushLogs() before
+// replying, because a serverless function can be frozen once it has answered; Book and Ticket flush at once.
+const LOG_ROWS = []
+
+export async function flushLogs() {
   const url = process.env.SUPABASE_URL, key = process.env.SUPABASE_SERVICE_KEY
-  if (!url || !key) return
-  fetch(`${url}/rest/v1/tbo_logs`, {
+  const rows = LOG_ROWS.splice(0)
+  if (!rows.length || !url || !key) return
+  await fetch(`${url}/rest/v1/tbo_logs`, {
     method: 'POST',
-    headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
-    body: JSON.stringify({ env: ENV, trace_id: traceId || null, method, kind, body }),
+    headers: { apikey: key, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+    body: JSON.stringify(rows),
+    signal: AbortSignal.timeout(8000),
   }).catch(() => {})
 }
 
+/** Queues a request/response for Supabase (tbo_logs) when SUPABASE_URL + SUPABASE_SERVICE_KEY are set. */
+function toSupabase(method, traceId, kind, body) {
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) return
+  LOG_ROWS.push({ env: ENV, trace_id: traceId || null, method, kind, body })
+  if (LOG_ROWS.length > 300) LOG_ROWS.splice(0, LOG_ROWS.length - 300) // never grow without bound
+}
+
+/** A Search reply can be several MB: keep a summary in the database unless TBO_LOG_SEARCH=full. */
+const BIG = new Set(['Search', 'GetCalendarFare', 'PriceRBD'])
+function trimBig(body) {
+  const r = body?.Response
+  return { note: 'Large reply trimmed; set TBO_LOG_SEARCH=full to keep the whole payload', ResponseStatus: r?.ResponseStatus, TraceId: r?.TraceId, Error: r?.Error, resultCount: (r?.Results || r?.SearchResults || []).map((x) => (Array.isArray(x) ? x.length : 1)) }
+}
+
 function log(method, traceId, kind, body) {
-  const safe = redact(body)
-  toSupabase(method, traceId, kind, safe)
+  // masked copy, made only when needed: a Search reply can be megabytes
+  let masked
+  const safeBody = () => (masked ??= redact(body))
+  const trimmed = BIG.has(method) && kind === 'response' && LOG_MODE !== 'full'
+  toSupabase(method, traceId, kind, trimmed ? trimBig(body) : safeBody())
   if (!LOG_DIR) {
     // Vercel: keep logs short — full payloads only for booking-side calls.
-    if (kind === 'response' && method !== 'Search') console.log(`[tbo] ${method} ${traceId || ''} ${JSON.stringify(safe).slice(0, 2000)}`)
+    if (kind === 'response' && method !== 'Search') console.log(`[tbo] ${method} ${traceId || ''} ${JSON.stringify(safeBody()).slice(0, 2000)}`)
     return
   }
   try {
     const dir = path.join(LOG_DIR, traceId || 'no-trace')
     fs.mkdirSync(dir, { recursive: true })
     const big = method === 'Search' && kind === 'response' && LOG_MODE !== 'full'
-    const data = big ? { note: 'Search response trimmed; set TBO_LOG_SEARCH=full for the whole payload', ResponseStatus: body?.Response?.ResponseStatus, TraceId: body?.Response?.TraceId, Error: body?.Response?.Error, resultCount: (body?.Response?.Results || []).map((r) => r.length) } : safe
+    const data = big ? { note: 'Search response trimmed; set TBO_LOG_SEARCH=full for the whole payload', ResponseStatus: body?.Response?.ResponseStatus, TraceId: body?.Response?.TraceId, Error: body?.Response?.Error, resultCount: (body?.Response?.Results || []).map((r) => r.length) } : safeBody()
     const n = String(++seq).padStart(3, '0')
     fs.writeFileSync(path.join(dir, `${Date.now()}-${n}-${method}-${kind}.json`), JSON.stringify(data, null, 2))
   } catch {
@@ -95,10 +124,20 @@ function log(method, traceId, kind, body) {
   }
 }
 
+// On the live system the stored logs must not hold passport numbers, PAN or dates of birth: the airline already
+// has them, and a log is a copy nobody needs to find in a database dump. (Staging keeps them: TBO certification
+// wants complete JSON.) The login password is always masked.
+const SENSITIVE = /^(PassportNo|PassportExpiry|PassportIssueDate|PassportIssueCountryCode|DateOfBirth|PAN|GuardianPAN)$/i
+function maskDeep(v, depth = 0) {
+  if (depth > 14 || v === null || typeof v !== 'object') return v
+  if (Array.isArray(v)) return v.map((x) => maskDeep(x, depth + 1))
+  return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, SENSITIVE.test(k) && x ? '***' : maskDeep(x, depth + 1)]))
+}
+
 function redact(body) {
   if (!body || typeof body !== 'object') return body
-  if (!('Password' in body)) return body
-  return { ...body, Password: '***' }
+  const b = 'Password' in body ? { ...body, Password: '***' } : body
+  return IS_LIVE ? maskDeep(b) : b
 }
 
 /* ---------- transport ---------- */
@@ -121,6 +160,7 @@ async function post(url, method, body, traceId, timeoutMs = 60000) {
         // the gateway's own token (TBO ignores it). The gateway answers its own errors as plain text,
         // which fails JSON.parse below, so a relay problem can never look like a TBO success.
         ...(RELAY && RELAY_TOKEN && url.startsWith(RELAY) ? { Authorization: `Bearer ${RELAY_TOKEN}` } : {}),
+        ...(RELAY && url.startsWith(RELAY) && callerCtx.getStore()?.ip ? { 'X-End-User-IP': callerCtx.getStore().ip } : {}),
       },
       body: JSON.stringify(body),
       signal: ctrl.signal,
@@ -141,6 +181,7 @@ async function post(url, method, body, traceId, timeoutMs = 60000) {
   const tid = traceId || json?.Response?.TraceId
   if (late) log(method, tid, 'request', body)
   log(method, tid, 'response', json)
+  if (method === 'Book' || method === 'Ticket') await flushLogs() // keep the booking's record even if the function is cut off later
   return json
 }
 
@@ -155,7 +196,9 @@ export async function authenticate({ force = false } = {}) {
   const { TBO_USERNAME, TBO_PASSWORD } = process.env
   if (!TBO_USERNAME || !TBO_PASSWORD) throw new TboError('Flight booking is not configured (TBO login missing).', { status: 503 })
   const json = await post(URLS.auth, 'Authenticate', {
-    ClientId: 'ApiIntegrationNew',
+    // TBO: 'tboprod' for production, 'ApiIntegrationNew' for the test system. The test system never accepts the production id, so it is
+    // tied to the mode: a half-switched setup can no longer send one to the other.
+    ClientId: IS_LIVE ? process.env.TBO_CLIENT_ID || 'tboprod' : 'ApiIntegrationNew',
     UserName: TBO_USERNAME,
     Password: TBO_PASSWORD,
     EndUserIp: END_USER_IP,
@@ -205,13 +248,13 @@ export function seal(obj, ttlMs = 15 * 60 * 1000) {
   return Buffer.concat([iv, c.getAuthTag(), data]).toString('base64url')
 }
 
-export function unseal(token, what = 'session') {
+export function unseal(token, what = 'session', { ignoreExpiry = false } = {}) {
   try {
     const buf = Buffer.from(String(token), 'base64url')
     const d = crypto.createDecipheriv('aes-256-gcm', key(), buf.subarray(0, 12))
     d.setAuthTag(buf.subarray(12, 28))
     const obj = JSON.parse(Buffer.concat([d.update(buf.subarray(28)), d.final()]).toString('utf8'))
-    if (obj.exp < Date.now()) throw new Error('expired')
+    if (!ignoreExpiry && obj.exp < Date.now()) throw new Error('expired')
     return obj
   } catch (e) {
     throw new TboError(

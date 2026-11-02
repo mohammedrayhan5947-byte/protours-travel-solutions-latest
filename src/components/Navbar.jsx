@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Link, useLocation } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { Phone, Mail, MapPin, ArrowRight } from 'lucide-react'
+import { Phone, Mail, MapPin, ArrowRight, UserRound } from 'lucide-react'
 import { BIZ, NAV, waLink } from '../data/site.js'
 import { lockScroll, scrollTo } from './SmoothScroll.jsx'
 import { introDone } from './fx.jsx'
+import { useAccount } from '../pages/account/session.js'
 
 export default function Navbar() {
+  const account = useAccount()
   const [scrolled, setScrolled] = useState(false)
   const [open, setOpen] = useState(false)
   const burgerRef = useRef(null)
@@ -168,6 +170,15 @@ export default function Navbar() {
 
           {/* Right side */}
           <div className="flex items-center gap-2.5">
+            <Link
+              to="/account"
+              title={account ? 'My trips' : 'Sign in'}
+              className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-2 font-display text-[0.86rem] font-semibold whitespace-nowrap transition-colors ${overHero ? 'text-white/90 hover:text-white' : 'text-body hover:text-navy-950'}`}
+            >
+              <UserRound size={18} aria-hidden="true" />
+              {/* the label only where there is room: phones/tablets and very wide screens; icon alone in between */}
+              <span className="sr-only sm:not-sr-only xl:sr-only 2xl:not-sr-only">{account ? 'My trips' : 'Sign in'}</span>
+            </Link>
             <a
               href={waLink()} target="_blank" rel="noopener noreferrer"
               className="btn btn-gold hidden !px-5 !py-2.5 !text-[0.97rem] sm:inline-flex"
@@ -287,6 +298,7 @@ export default function Navbar() {
               </div>
 
               <div className="mt-auto space-y-3 pt-9">
+                <Link to="/account" className="btn w-full border-white/30 text-white hover:border-white/70"><UserRound size={16} aria-hidden="true" /> {account ? 'My trips' : 'Sign in / Create account'}</Link>
                 <a href={waLink()} target="_blank" rel="noopener noreferrer" className="btn btn-wa w-full">
                   Chat on WhatsApp<span className="sr-only"> with {BIZ.shortName}</span>
                 </a>
