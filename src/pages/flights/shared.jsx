@@ -45,9 +45,17 @@ export const bucketOf = (s) => TIME_BUCKETS.find((b) => b.test(hourOf(s)))?.id
 
 export async function api(action, payload, { signal } = {}) {
   const token = action === 'checkout' ? await accountToken() : null // signed-in customers: link the booking to My trips
-  const r = await fetch('/api/flights', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ action, ...payload }), signal })
+  let r
+  try {
+    r = await fetch('/api/flights', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ action, ...payload }), signal })
+  } catch (e) {
+    if (e?.name === 'AbortError') throw e
+    // offline, dropped connection, blocked request: say so in plain words (status 0 = the request never got an answer)
+    throw Object.assign(new Error(navigator.onLine === false ? 'You appear to be offline. Please check your internet connection and try again.' : 'We could not reach the server. Please check your connection and try again.'), { status: 0 })
+  }
   const data = await r.json().catch(() => ({}))
-  if (!r.ok) throw Object.assign(new Error(data.error || 'Something went wrong. Please try again.'), { status: r.status })
+  const slow = r.status === 502 || r.status === 503 || r.status === 504
+  if (!r.ok) throw Object.assign(new Error(data.error || (slow ? 'The airline system is taking too long to answer. Please try again in a moment.' : r.status === 429 ? 'Too many attempts. Please wait a minute and try again.' : 'Something went wrong. Please try again.')), { status: r.status })
   return data
 }
 

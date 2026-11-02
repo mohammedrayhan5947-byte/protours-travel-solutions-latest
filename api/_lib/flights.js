@@ -43,6 +43,7 @@ export async function search(input) {
     if (s.from === s.to) throw bad('Origin and destination must be different.')
     if (!dateOk(s.date)) throw bad('Choose a travel date.')
     if (s.date < todayIso) throw bad('Travel dates cannot be in the past.')
+    if (s.date > new Date(Date.now() + 361 * 864e5).toISOString().slice(0, 10)) throw bad('Airlines open flights about 11 months ahead. Please choose an earlier date.')
     if (i && s.date < segs[i - 1].date) throw bad('Each flight date must be on or after the one before it.')
   })
 
@@ -67,11 +68,19 @@ export async function search(input) {
     Sources: Array.isArray(input.sources) && input.sources.length ? input.sources.map(String) : null,
   }
   // TBO: ErrorCode 6 = invalid token (check the code, not the message) → fresh token, retry once.
+  const retried = (e) => e.code === 6
   const r = await air('Search', { tokenId: auth.tokenId }, searchBody).catch(async (e) => {
-    if (e.code !== 6) throw e
+    if (!retried(e)) throw e
     auth = await authenticate({ force: true })
     return air('Search', { tokenId: auth.tokenId }, searchBody)
+  }).catch((e) => {
+    // "No Result Found" (TBO ErrorCode 25) just means no flights that day: show the empty results page, not a red error
+    if (e.code === 25 || /no result/i.test(String(e.message))) return { Results: [], TraceId: null }
+    throw e
   })
+  if (!(r.Results || []).some((l) => l?.length)) {
+    return { session: seal({ tokenId: auth.tokenId, traceId: r.TraceId, journey, domestic, lists: 1, pax: { adults, children, infants } }), traceId: r.TraceId, journey, domestic, lists: [[]], pax: { adults, children, infants }, live: IS_LIVE, empty: true }
+  }
 
   // the price shown is the airline's fare plus our markup (set in the CRM), for the whole party
   const priceCtx = { rule: ruleFor(await getMarkup(), domestic), pax: { adults, children, infants } }
@@ -441,7 +450,7 @@ export function validatePassengers(list, q, contact) {
   const firstDep = q.legs.map((l) => l.depDate).filter(Boolean).sort()[0] || new Date().toISOString()
   const names = new Set()
 
-  if (!/^[6-9]\d{9}$/.test(String(contact?.phone || '').replace(/\D/g, '').slice(-10))) throw bad('Enter a valid 10-digit mobile number.')
+  if (!phoneOk(contact?.phone)) throw bad('Enter a valid mobile number (10 digits, or with your country code, like +971 50 123 4567).')
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(contact?.email || '')) throw bad('Enter a valid email address.')
 
   const out = list.map((p, i) => {
@@ -500,8 +509,20 @@ export function validatePassengers(list, q, contact) {
     return { paxType, title: p.title, first, last, gender, dob, passport, pan, guardian, nationality: up(p.nationality || 'IN').slice(0, 2) }
   })
   for (const t of [1, 2, 3]) if (have[t] !== need[t]) throw bad('Passenger count does not match your search.')
-  out.contact = { phone: String(contact.phone).replace(/\D/g, '').slice(-10), email: contact.email.trim(), address: clean(contact.address || '') || 'Bengaluru', city: clean(contact.city || '') || 'Bengaluru' }
+  out.contact = { phone: phoneDigits(contact.phone), email: contact.email.trim(), address: clean(contact.address || '') || 'Bengaluru', city: clean(contact.city || '') || 'Bengaluru' }
   return out
+}
+
+/** A mobile number: Indian (10 digits starting 6-9, with or without +91 / 0) or international (+ country code, 8 to 15 digits). */
+const phoneOk = (v) => {
+  const raw = String(v || '').trim(), d = raw.replace(/\D/g, '')
+  if (raw.startsWith('+') && !d.startsWith('91')) return d.length >= 8 && d.length <= 15
+  return /^[6-9]\d{9}$/.test(d.slice(-10)) && (d.length === 10 || (d.length === 11 && d[0] === '0') || (d.length === 12 && d.startsWith('91')))
+}
+/** What TBO and the CRM get: 10 digits for an Indian number, the full digits (with country code) otherwise. */
+const phoneDigits = (v) => {
+  const raw = String(v || '').trim(), d = raw.replace(/\D/g, '')
+  return raw.startsWith('+') && !d.startsWith('91') ? d : d.slice(-10)
 }
 
 function validateGst(g) {

@@ -350,7 +350,7 @@ export default function Review({ q, searchedAt, onBack, onPay, busy }) {
           )}
           <div className="grid gap-3 sm:grid-cols-2">
             <div><label className={label} htmlFor="em">Email</label><input id="em" type="email" className={input} required autoComplete="email" value={contact.email} onChange={(e) => setContact((c) => ({ ...c, email: e.target.value }))} /></div>
-            <div><label className={label} htmlFor="ph">Mobile number</label><input id="ph" type="tel" className={input} required inputMode="numeric" autoComplete="tel" pattern="[0-9+ ]{10,14}" value={contact.phone} onChange={(e) => setContact((c) => ({ ...c, phone: e.target.value }))} /></div>
+            <div><label className={label} htmlFor="ph">Mobile number</label><input id="ph" type="tel" className={input} required inputMode="numeric" autoComplete="tel" pattern="\+?[0-9 ()-]{10,18}" value={contact.phone} onChange={(e) => setContact((c) => ({ ...c, phone: e.target.value }))} /></div>
             <div><label className={label} htmlFor="ad">Address</label><input id="ad" className={input} required autoComplete="street-address" value={contact.address} onChange={(e) => setContact((c) => ({ ...c, address: e.target.value }))} /></div>
             <div><label className={label} htmlFor="ci">City</label><input id="ci" className={input} required autoComplete="address-level2" value={contact.city} onChange={(e) => setContact((c) => ({ ...c, city: e.target.value }))} /></div>
           </div>
